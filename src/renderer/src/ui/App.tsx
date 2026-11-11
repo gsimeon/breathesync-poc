@@ -9,8 +9,9 @@ import {
   Clock,
   RefreshCw,
   Info,
-  PauseCircle,
+  RotateCcw,
 } from 'lucide-react';
+import { ACQUISITION_TIMEOUT_MS } from '../../../common/telemetry-utils';
 
 type Metric = {
   breathingRate: number | null;
@@ -35,6 +36,7 @@ export default function App() {
   const [showTips, setShowTips] = useState(false);
   const [lastMetricTime, setLastMetricTime] = useState<number | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const [acquisitionTimedOut, setAcquisitionTimedOut] = useState(false);
 
   // Load cameras
   const refreshCameras = () => {
@@ -55,6 +57,7 @@ export default function App() {
       setMetric(payload as Metric);
       setLastMetricTime(Date.now());
       setIsStale(false);
+      setAcquisitionTimedOut(false);
     });
 
     const offStatus = window.breatheSync.onStatus((payload: any) => {
@@ -72,7 +75,7 @@ export default function App() {
     };
   }, []);
 
-  // Measurement freshness heartbeat: flags as stale if no new sample in 2.5s
+  // Measurement freshness heartbeat: flags as stale if no new sample arrives in 2.5s
   useEffect(() => {
     if (!running) {
       setIsStale(false);
@@ -87,6 +90,22 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [running, lastMetricTime]);
+
+  // P1: Initial acquisition timeout: flags if no initial metric arrives within 15s
+  useEffect(() => {
+    if (!running || metric != null) {
+      setAcquisitionTimedOut(false);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      if (running && metric == null) {
+        setAcquisitionTimedOut(true);
+      }
+    }, ACQUISITION_TIMEOUT_MS);
+
+    return () => clearTimeout(timeout);
+  }, [running, metric]);
 
   // Session elapsed timer
   useEffect(() => {
@@ -108,17 +127,19 @@ export default function App() {
 
   const confidenceState = useMemo(() => {
     if (!running) return { label: 'Sensors Idle', color: 'neutral', icon: '○' };
+    if (acquisitionTimedOut) return { label: 'Acquisition Timeout (No Face/Chest Detected)', color: 'warning', icon: '⚠️' };
     if (isStale) return { label: 'Signal Paused (Awaiting fresh samples)', color: 'warning', icon: '⏸' };
     if (metric?.confidence == null) return { label: 'Acquiring signal...', color: 'warning', icon: '◌' };
     if (metric.stable) return { label: 'Signal Stable (Confidence >= 45%)', color: 'success', icon: '●' };
     return { label: 'Calibrating (Low Confidence)', color: 'warning', icon: '◌' };
-  }, [metric, running, isStale]);
+  }, [metric, running, isStale, acquisitionTimedOut]);
 
   async function start() {
     setError('');
     setMetric(null);
     setLastMetricTime(null);
     setIsStale(false);
+    setAcquisitionTimedOut(false);
 
     try {
       await window.breatheSync.start(cameraId);
@@ -139,11 +160,19 @@ export default function App() {
       setMetric(null);
       setLastMetricTime(null);
       setIsStale(false);
+      setAcquisitionTimedOut(false);
     }
   }
 
+  async function restartMeasurement() {
+    await stop();
+    setTimeout(() => {
+      start();
+    }, 400);
+  }
+
   const waveform = metric?.chestTrace ?? metric?.abdomenTrace ?? 0;
-  const scale = (metric?.state === 'valid' && !isStale)
+  const scale = (metric?.state === 'valid' && !isStale && !acquisitionTimedOut)
     ? 1 + Math.max(-0.16, Math.min(0.16, waveform * 0.08))
     : 1;
 
@@ -168,9 +197,11 @@ export default function App() {
               <span>{formatTimer(sessionSeconds)}</span>
             </div>
           )}
-          <span className={`status-pill ${running ? (isStale ? 'stale' : 'measuring') : 'idle'}`}>
+          <span className={`status-pill ${running ? (isStale || acquisitionTimedOut ? 'stale' : 'measuring') : 'idle'}`}>
             <span className="pill-dot" />
-            {running ? (isStale ? 'Signal Paused' : 'Live Measuring') : 'Sensor Idle'}
+            {running
+              ? (acquisitionTimedOut ? 'Acquisition Delay' : isStale ? 'Signal Paused' : 'Live Measuring')
+              : 'Sensor Idle'}
           </span>
         </div>
       </header>
@@ -236,7 +267,7 @@ export default function App() {
                 <p className="eyebrow">RESONANCE FIELD</p>
                 <h2>Thoracic motion</h2>
               </div>
-              <span className={`live-dot ${running ? (isStale ? 'stale' : 'active') : ''}`} />
+              <span className={`live-dot ${running ? (isStale || acquisitionTimedOut ? 'stale' : 'active') : ''}`} />
             </div>
 
             <div className="orb-stage">
@@ -246,6 +277,8 @@ export default function App() {
               <span className="orb-caption">
                 {!running
                   ? 'Sensors standing by'
+                  : acquisitionTimedOut
+                  ? 'Acquisition taking longer than expected · Check lighting & position'
                   : isStale
                   ? 'Signal paused · Waiting for fresh camera frames'
                   : metric?.state === 'valid'
@@ -256,7 +289,7 @@ export default function App() {
           </article>
 
           {/* Real-Time Waveform Graph */}
-          <WaveformGraph currentMetric={metric} running={running} isStale={isStale} />
+          <WaveformGraph currentMetric={metric} running={running} isStale={isStale || acquisitionTimedOut} />
         </div>
 
         {/* Right Column: Measurements & Quality Card */}
@@ -272,11 +305,11 @@ export default function App() {
               <div className="metric-label-row">
                 <span className="metric-name">Breathing Rate</span>
                 <span className="reference-tag">
-                  {isStale ? 'Signal Paused' : 'Sensor Telemetry'}
+                  {acquisitionTimedOut ? 'Waiting for Lock' : isStale ? 'Signal Paused' : 'Sensor Telemetry'}
                 </span>
               </div>
               <div className="metric-value-row">
-                <span className={`huge-number ${isStale ? 'stale-value' : ''}`}>
+                <span className={`huge-number ${isStale || acquisitionTimedOut ? 'stale-value' : ''}`}>
                   {metric?.breathingRate == null ? '—' : metric.breathingRate.toFixed(1)}
                 </span>
                 <span className="metric-unit">
@@ -298,7 +331,7 @@ export default function App() {
                   className="confidence-meter-bar"
                   style={{
                     width: `${Math.min(100, Math.max(0, metric?.confidence ?? 0))}%`,
-                    opacity: isStale ? 0.4 : 1,
+                    opacity: isStale || acquisitionTimedOut ? 0.4 : 1,
                   }}
                 />
               </div>
@@ -317,14 +350,14 @@ export default function App() {
                 <div className="trace-chip chest">
                   <span className="chip-indicator" />
                   <span className="chip-label">Upper Thorax (Chest)</span>
-                  <span className={`chip-value ${isStale ? 'stale-value' : ''}`}>
+                  <span className={`chip-value ${isStale || acquisitionTimedOut ? 'stale-value' : ''}`}>
                     {metric?.chestTrace != null ? metric.chestTrace.toFixed(3) : '—'}
                   </span>
                 </div>
                 <div className="trace-chip abdomen">
                   <span className="chip-indicator" />
                   <span className="chip-label">Lower Thorax (Abdomen)</span>
-                  <span className={`chip-value ${isStale ? 'stale-value' : ''}`}>
+                  <span className={`chip-value ${isStale || acquisitionTimedOut ? 'stale-value' : ''}`}>
                     {metric?.abdomenTrace != null ? metric.abdomenTrace.toFixed(3) : '—'}
                   </span>
                 </div>
@@ -342,6 +375,24 @@ export default function App() {
           </article>
         </div>
       </section>
+
+      {/* P1: Acquisition Timeout Recovery Banner */}
+      {acquisitionTimedOut && (
+        <section className="acquisition-timeout-banner" role="alert">
+          <AlertCircle size={20} className="timeout-icon" />
+          <div className="timeout-content">
+            <strong>Initial Acquisition Taking Longer Than Expected</strong>
+            <p>
+              The camera is active, but the computer vision model hasn't isolated your respiratory movements yet.
+              Please ensure your face and chest are well-lit, sit facing the webcam, and keep your upper torso in view.
+            </p>
+          </div>
+          <button type="button" className="restart-btn" onClick={restartMeasurement}>
+            <RotateCcw size={14} />
+            <span>Restart Sensor</span>
+          </button>
+        </section>
+      )}
 
       {/* Session Controls Card */}
       <section className="card setup-card">
