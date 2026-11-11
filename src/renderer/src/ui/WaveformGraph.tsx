@@ -161,7 +161,11 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
 
           for (let i = 0; i < data.length; i++) {
             const val = selector(data[i]);
-            if (val == null) continue;
+            if (val == null) {
+              // Lift the pen on missing data so gaps are not falsely connected
+              started = false;
+              continue;
+            }
             const x = i * step;
             const y = getY(val);
 
@@ -170,10 +174,14 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
               started = true;
             } else {
               const prevVal = selector(data[i - 1]);
-              const prevX = (i - 1) * step;
-              const prevY = getY(prevVal);
-              const cpX = (prevX + x) / 2;
-              ctx.bezierCurveTo(cpX, prevY, cpX, y, x, y);
+              if (prevVal == null) {
+                ctx.moveTo(x, y);
+              } else {
+                const prevX = (i - 1) * step;
+                const prevY = getY(prevVal);
+                const cpX = (prevX + x) / 2;
+                ctx.bezierCurveTo(cpX, prevY, cpX, y, x, y);
+              }
             }
           }
 

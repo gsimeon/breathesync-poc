@@ -91,21 +91,27 @@ export default function App() {
     return () => clearInterval(interval);
   }, [running, lastMetricTime]);
 
-  // P1: Initial acquisition timeout: flags if no initial metric arrives within 15s
+  // P1: Initial acquisition timeout: arms once per measurement session until a valid breathing rate arrives.
+  // Trace-only frames do NOT reset this timer.
+  const hasValidBreathingRate = metric?.breathingRate != null;
+
   useEffect(() => {
-    if (!running || metric != null) {
+    if (!running) {
+      setAcquisitionTimedOut(false);
+      return;
+    }
+
+    if (hasValidBreathingRate) {
       setAcquisitionTimedOut(false);
       return;
     }
 
     const timeout = setTimeout(() => {
-      if (running && metric == null) {
-        setAcquisitionTimedOut(true);
-      }
+      setAcquisitionTimedOut(true);
     }, ACQUISITION_TIMEOUT_MS);
 
     return () => clearTimeout(timeout);
-  }, [running, metric]);
+  }, [running, hasValidBreathingRate]);
 
   // Session elapsed timer
   useEffect(() => {

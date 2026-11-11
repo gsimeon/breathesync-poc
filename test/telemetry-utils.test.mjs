@@ -159,3 +159,52 @@ test('transitionSessionState validates complete session state machine', () => {
 test('ACQUISITION_TIMEOUT_MS is configured to 15 seconds', () => {
   assert.equal(ACQUISITION_TIMEOUT_MS, 15000);
 });
+
+test('trace-only events keep state as acquiring and do not produce a false rate', () => {
+  const traceOnlyPayload = {
+    breathing: {
+      rate: null,
+      upperTrace: [{ value: -0.849 }],
+      lowerTrace: [{ value: -0.924 }],
+    },
+  };
+
+  const normalized = normalizeBreathingMetrics(traceOnlyPayload, 99999, 1000);
+  assert.equal(normalized.breathingRate, null);
+  assert.equal(normalized.chestTrace, -0.849);
+  assert.equal(normalized.abdomenTrace, -0.924);
+  assert.equal(normalized.state, 'acquiring');
+});
+
+test('startup failure allows clean recovery on subsequent start attempt', () => {
+  // Simulate starting
+  const startAttempt1 = transitionSessionState('idle', 'start');
+  assert.equal(startAttempt1.nextState, 'starting');
+
+  // Simulate SDK startup error
+  const failure = transitionSessionState('starting', 'start_failed');
+  assert.equal(failure.allowed, true);
+  assert.equal(failure.nextState, 'idle');
+
+  // Verify that a subsequent start is immediately allowed
+  const startAttempt2 = transitionSessionState(failure.nextState, 'start');
+  assert.equal(startAttempt2.allowed, true);
+  assert.equal(startAttempt2.nextState, 'starting');
+});
+
+test('concurrent shutdown during startup locks state to shutting_down and rejects start_success', () => {
+  // Session starts
+  const start = transitionSessionState('idle', 'start');
+  assert.equal(start.nextState, 'starting');
+
+  // User closes app while startup is in flight
+  const shutdown = transitionSessionState('starting', 'shutdown');
+  assert.equal(shutdown.allowed, true);
+  assert.equal(shutdown.nextState, 'shutting_down');
+
+  // Delayed startup completion cannot overwrite shutting_down
+  const delayedSuccess = transitionSessionState(shutdown.nextState, 'start_success');
+  assert.equal(delayedSuccess.allowed, false);
+  assert.equal(delayedSuccess.nextState, 'shutting_down');
+});
+

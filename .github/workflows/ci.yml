@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Typecheck, Test & Build
+    name: Typecheck, Test & Package
     runs-on: windows-latest
 
     steps:
@@ -30,3 +30,14 @@ jobs:
       - name: Build Bundles
         run: npm run build
 
+      - name: Build Windows NSIS Installer
+        run: npm run package:win
+
+      - name: Verify Installer Artifact
+        shell: powershell
+        run: |
+          if (-not (Test-Path "release/BreatheSync Setup 0.1.0.exe")) {
+            throw "Expected NSIS installer executable not found in release/"
+          }
+          $item = Get-Item "release/BreatheSync Setup 0.1.0.exe"
+          Write-Output "Verified installer: $($item.Name) ($([math]::Round($item.Length / 1MB, 2)) MB)"

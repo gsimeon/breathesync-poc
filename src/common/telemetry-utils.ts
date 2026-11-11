@@ -190,3 +190,4 @@ export function transitionSessionState(
       return { nextState: currentState, allowed: false, error: 'Unknown session action' };
   }
 }
+

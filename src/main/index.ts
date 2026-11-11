@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   SmartSpectraSDK,
   CameraSelection,
@@ -19,10 +20,10 @@ let mainWindow: BrowserWindow | null = null;
 let sdk: SmartSpectraSDK | null = null;
 let sessionState: SessionState = 'idle';
 let isShuttingDown = false;
-let isCleaningUp = false;
 
 // P0: Coordinate in-flight startup with shutdown and stop
 let activeStartupPromise: Promise<void> | null = null;
+let activeCleanupPromise: Promise<void> | null = null;
 
 function send(channel: string, payload: unknown) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -69,21 +70,51 @@ function registerSdkEvents(instance: SmartSpectraSDK) {
   });
 }
 
+function getExpectedPackagedRendererUrl(): string {
+  return pathToFileURL(resolve(__dirname, '../renderer/index.html')).href;
+}
+
 /**
- * P0 Security: Validate both IPC sender webContents and origin/URL.
+ * P1 Security: Validate both IPC sender webContents, main-frame context, and exact origin/URL.
  */
 function validateIpcSender(event: Electron.IpcMainInvokeEvent) {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
     throw new Error('Unauthorized IPC invocation: untrusted sender');
   }
 
-  // Validate sender URL origin
-  const senderUrl = event.senderFrame?.url || '';
-  const isAllowedDev = !app.isPackaged && (senderUrl.startsWith('http://localhost:') || senderUrl.startsWith('http://127.0.0.1:'));
-  const isAllowedFile = senderUrl.startsWith('file://');
+  // P1 Security: Ensure invocation comes strictly from the top-level main frame
+  if (event.senderFrame && (event.senderFrame.parent !== null || event.sender.mainFrame !== event.senderFrame)) {
+    throw new Error('Unauthorized IPC invocation: non-main frame');
+  }
 
-  if (!isAllowedDev && !isAllowedFile) {
-    throw new Error(`Unauthorized IPC invocation origin: ${senderUrl}`);
+  const senderUrl = event.senderFrame?.url || '';
+
+  if (app.isPackaged) {
+    const expectedUrl = getExpectedPackagedRendererUrl();
+    if (senderUrl !== expectedUrl) {
+      throw new Error(`Unauthorized IPC invocation in packaged mode: ${senderUrl}`);
+    }
+  } else {
+    // In development mode, strictly allow local development server URL or local packaged file
+    const devUrl = process.env.ELECTRON_RENDERER_URL;
+    let isAllowed = false;
+    if (devUrl && (devUrl.startsWith('http://localhost:') || devUrl.startsWith('http://127.0.0.1:'))) {
+      try {
+        const expectedOrigin = new URL(devUrl).origin;
+        const senderOrigin = new URL(senderUrl).origin;
+        isAllowed = senderOrigin === expectedOrigin;
+      } catch {
+        isAllowed = false;
+      }
+    }
+    if (!isAllowed) {
+      const expectedFile = getExpectedPackagedRendererUrl();
+      isAllowed = senderUrl === expectedFile;
+    }
+
+    if (!isAllowed) {
+      throw new Error(`Unauthorized IPC invocation origin: ${senderUrl}`);
+    }
   }
 }
 
@@ -98,20 +129,25 @@ ipcMain.handle('breathesync:cameras', async (event) => {
 });
 
 /**
- * Perform idempotent, sequential cleanup of the active SDK instance.
+ * P0: Execute cleanup exactly once and allow all concurrent callers (stop, shutdown, etc.)
+ * to await the identical cleanup operation without deadlocks.
+ *
+ * @param callerIsStartup - set to true when called from inside startupTask failure branch
+ *                          so cleanup doesn't deadlock by awaiting activeStartupPromise.
  */
-async function cleanupSdk(): Promise<void> {
-  if (isCleaningUp) return;
-  isCleaningUp = true;
+function cleanupSdk(callerIsStartup = false): Promise<void> {
+  if (activeCleanupPromise) {
+    return activeCleanupPromise;
+  }
 
-  try {
-    // If a startup operation is actively in flight, await its settlement first
-    if (activeStartupPromise) {
-      console.log('Awaiting in-flight SDK startup before teardown...');
+  activeCleanupPromise = (async () => {
+    // If called externally (not from startup failure itself), wait for startup to settle first
+    if (activeStartupPromise && !callerIsStartup) {
+      console.log('Awaiting in-flight startup to settle before running cleanup...');
       try {
         await activeStartupPromise;
       } catch {
-        // Startup failure will be handled by its own error branch
+        // Startup error will be handled by its own caller
       }
       activeStartupPromise = null;
     }
@@ -125,9 +161,11 @@ async function cleanupSdk(): Promise<void> {
       try { await current.destroy(); } catch (e) { console.warn('SDK destroy warning:', e); }
       console.log('SmartSpectra session successfully torn down.');
     }
-  } finally {
-    isCleaningUp = false;
-  }
+  })().finally(() => {
+    activeCleanupPromise = null;
+  });
+
+  return activeCleanupPromise;
 }
 
 ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
@@ -176,13 +214,14 @@ ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
         send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
       } else {
         console.log(`Startup settled but session state was '${sessionState}'; triggering deferred teardown.`);
-        await cleanupSdk();
+        await cleanupSdk(false);
       }
     } catch (error) {
       if (sessionState === 'starting') {
         sessionState = 'idle';
       }
-      await cleanupSdk();
+      activeStartupPromise = null; // Clear before calling cleanup so no circular await occurs
+      await cleanupSdk(true);
       throw error;
     } finally {
       activeStartupPromise = null;
@@ -210,7 +249,7 @@ ipcMain.handle('breathesync:stop', async (event) => {
   send('breathesync:status', { kind: 'session', detail: 'Stopping measurement and releasing camera...' });
 
   try {
-    await cleanupSdk();
+    await cleanupSdk(false);
   } finally {
     if (!isShuttingDown) {
       sessionState = 'idle';
@@ -297,7 +336,7 @@ app.on('before-quit', async (event) => {
   console.log('App quitting: beginning graceful camera and SDK teardown...');
 
   try {
-    await cleanupSdk();
+    await cleanupSdk(false);
   } catch (error) {
     console.error('Error during shutdown cleanup:', error);
   } finally {
