@@ -84,7 +84,7 @@ test('SessionLifecycleCoordinator: startup failure attempts both stopAsync and d
   await coordinator.stop();
 });
 
-test('SessionLifecycleCoordinator: startup failure where stopAsync itself rejects still runs destroy', async () => {
+test('SessionLifecycleCoordinator: startup failure where stopAsync itself rejects still runs destroy and enters degraded', async () => {
   const coordinator = new SessionLifecycleCoordinator();
   let destroyed = false;
 
@@ -108,8 +108,80 @@ test('SessionLifecycleCoordinator: startup failure where stopAsync itself reject
   );
 
   assert.equal(destroyed, true);
-  assert.equal(coordinator.getState(), 'idle');
+  // P2 Conservative: Stop failure means camera release could not be confirmed
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getTeardownError()?.message.includes('stopAsync: Failed to stop camera stream'), true);
   assert.equal(coordinator.getSdk(), null);
+});
+
+test('SessionLifecycleCoordinator: subsequent cleanup call on null SDK does not erase previously recorded teardown failure', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+
+  const brokenSdk = {
+    start: async () => {},
+    stopAsync: async () => {
+      throw new Error('Driver failed to stop');
+    },
+    destroy: async () => {
+      throw new Error('DirectShow graph locked');
+    },
+  };
+
+  await coordinator.start(() => brokenSdk);
+
+  // Stop fails
+  await assert.rejects(
+    async () => {
+      await coordinator.stop();
+    },
+    { message: /Camera release failed/ }
+  );
+
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  const originalError = coordinator.getTeardownError();
+
+  // Subsequent cleanup invocation when sdk is null (e.g. repeated shutdown or cleanup)
+  await assert.rejects(
+    async () => {
+      await coordinator.cleanup();
+    },
+    { message: /Camera release failed/ }
+  );
+
+  // Must PRESERVE degraded state and failure flag — never reset to idle
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getTeardownError(), originalError);
+});
+
+test('SessionLifecycleCoordinator: startup failure with teardown failure preserves startup error and attaches teardownError', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+
+  const brokenStartupSdk = {
+    start: async () => {
+      throw new Error('Camera device busy');
+    },
+    stopAsync: async () => {
+      throw new Error('Hardware stop fault');
+    },
+    destroy: async () => {
+      throw new Error('DirectShow release fault');
+    },
+  };
+
+  try {
+    await coordinator.start(() => brokenStartupSdk);
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.equal(err.message, 'Camera device busy');
+    assert.ok(err.teardownError, 'teardownError must be attached to the startup error');
+    assert.equal(err.teardownError.message.includes('DirectShow release fault'), true);
+  }
+
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
 });
 
 test('SessionLifecycleCoordinator: stop called during in-flight startup does not deadlock', async () => {

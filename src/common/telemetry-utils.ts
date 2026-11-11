@@ -263,14 +263,6 @@ export class SessionLifecycleCoordinator {
     return this.teardownError;
   }
 
-  resetDegradedState(): void {
-    if (this.sessionState === 'degraded') {
-      this.sessionState = 'idle';
-      this.teardownFailed = false;
-      this.teardownError = null;
-    }
-  }
-
   async cleanup(): Promise<void> {
     if (this.activeCleanupPromise) {
       return this.activeCleanupPromise;
@@ -309,18 +301,27 @@ export class SessionLifecycleCoordinator {
             console.warn('SDK destroy warning:', e);
           }
         }
-      }
 
-      // P1: Check if teardown failed to release camera hardware resources
-      if (destroyErr) {
-        this.teardownFailed = true;
-        this.teardownError = new Error(
-          `Camera release failed: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`
-        );
-        throw this.teardownError;
+        // P2 Conservative Teardown: If either stopAsync or destroy rejects,
+        // camera release cannot be confirmed. Mark as degraded and throw.
+        if (destroyErr || stopErr) {
+          const parts: string[] = [];
+          if (stopErr) parts.push(`stopAsync: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`);
+          if (destroyErr) parts.push(`destroy: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`);
+          this.teardownFailed = true;
+          this.teardownError = new Error(`Camera release failed (${parts.join(', ')})`);
+          throw this.teardownError;
+        } else {
+          // Confirmed clean release of active SDK instance
+          this.teardownFailed = false;
+          this.teardownError = null;
+        }
       } else {
-        this.teardownFailed = false;
-        this.teardownError = null;
+        // P1: No active SDK instance was present. If a previous teardown had failed,
+        // we must PRESERVE the existing teardown failure state. Never clear it on empty cleanup.
+        if (this.teardownFailed && this.teardownError) {
+          throw this.teardownError;
+        }
       }
     })().finally(() => {
       this.activeCleanupPromise = null;
@@ -394,11 +395,13 @@ export class SessionLifecycleCoordinator {
                 }
               }
 
-              if (destroyErr) {
+              // P2 Conservative Teardown: If either fails, mark as degraded
+              if (destroyErr || stopErr) {
+                const parts: string[] = [];
+                if (stopErr) parts.push(`stopAsync: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`);
+                if (destroyErr) parts.push(`destroy: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`);
                 this.teardownFailed = true;
-                this.teardownError = new Error(
-                  `Camera release failed on startup: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`
-                );
+                this.teardownError = new Error(`Camera release failed on startup (${parts.join(', ')})`);
               } else {
                 this.teardownFailed = false;
                 this.teardownError = null;
@@ -413,6 +416,10 @@ export class SessionLifecycleCoordinator {
           } else {
             this.sessionState = 'idle';
           }
+        }
+        // Preserve startup error and attach teardownError if teardown failed
+        if (this.teardownFailed && this.teardownError && error && typeof error === 'object') {
+          (error as any).teardownError = this.teardownError;
         }
         throw error;
       } finally {

@@ -144,24 +144,41 @@ ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
 
   send('breathesync:status', { kind: 'session', detail: 'Initializing SmartSpectra camera session...' });
 
-  await coordinator.start(
-    async () => {
-      const instance = new SmartSpectraSDK({
-        apiKey,
-        requestedMetrics: [...breathingMetrics],
-        enableTelemetry: false,
+  try {
+    await coordinator.start(
+      async () => {
+        const instance = new SmartSpectraSDK({
+          apiKey,
+          requestedMetrics: [...breathingMetrics],
+          enableTelemetry: false,
+        });
+
+        registerSdkEvents(instance);
+        instance.useCamera(CameraSelection.byId(cameraId));
+        return instance;
+      },
+      () => {
+        send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
+      }
+    );
+    return { started: true };
+  } catch (error: any) {
+    // P1: Check if startup failed AND camera release failed (coordinator in degraded state)
+    if (!coordinator.wasLastTeardownSuccessful() || coordinator.getState() === 'degraded') {
+      const teardownErrMsg = coordinator.getTeardownError()?.message || 'Teardown failure';
+      send('breathesync:status', {
+        kind: 'session',
+        detail: 'Startup failed and camera release could not be confirmed. Please restart the application.',
+        error: teardownErrMsg,
       });
-
-      registerSdkEvents(instance);
-      instance.useCamera(CameraSelection.byId(cameraId));
-      return instance;
-    },
-    () => {
-      send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
+      send('breathesync:error', {
+        code: 'TEARDOWN_FAILED',
+        message: `Startup failed and camera release could not be confirmed (${teardownErrMsg}). Please restart the application.`,
+        retryable: false,
+      });
     }
-  );
-
-  return { started: true };
+    throw error;
+  }
 });
 
 ipcMain.handle('breathesync:stop', async (event) => {
