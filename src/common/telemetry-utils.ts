@@ -43,8 +43,7 @@ export interface NormalizedTelemetry {
   state: 'acquiring' | 'valid' | 'low_confidence';
 }
 
-/**
- * Standard Presage SmartSpectra minimum confidence threshold for stable measurement (+/- 1 br/min).
+/** Standard Presage SmartSpectra minimum confidence threshold for stable measurement (+/- 1 br/min).
  * See Presage Breathing Model Card: confidence >= 45 is marked stable.
  */
 export const STABILITY_CONFIDENCE_THRESHOLD = 45;
@@ -54,6 +53,48 @@ export const SIGNAL_FRESHNESS_TIMEOUT_MS = 2500;
 
 /** Timeout in milliseconds before flagging that initial acquisition took too long. */
 export const ACQUISITION_TIMEOUT_MS = 15000;
+
+/** Structured error code when hardware release / camera driver teardown fails or cannot be confirmed. */
+export const ERROR_CODE_TEARDOWN_FAILED = 'TEARDOWN_FAILED';
+
+/**
+ * Defensive check for hardware teardown failure.
+ * Prioritizes structured error codes (`code === 'TEARDOWN_FAILED'`) and supports
+ * nested teardownError objects and fallback message inspection.
+ */
+export function isTeardownError(error: unknown): boolean {
+  if (!error) return false;
+  if (typeof error === 'object') {
+    const errObj = error as Record<string, unknown>;
+    if (errObj.code === ERROR_CODE_TEARDOWN_FAILED) {
+      return true;
+    }
+    if (errObj.teardownError && typeof errObj.teardownError === 'object') {
+      const nested = errObj.teardownError as Record<string, unknown>;
+      if (nested.code === ERROR_CODE_TEARDOWN_FAILED) {
+        return true;
+      }
+    }
+    if (typeof errObj.message === 'string') {
+      const msg = errObj.message;
+      return (
+        msg.includes(ERROR_CODE_TEARDOWN_FAILED) ||
+        msg.includes('Camera release failed') ||
+        msg.includes('could not be released cleanly') ||
+        msg.includes('could not be cleanly released')
+      );
+    }
+  }
+  if (typeof error === 'string') {
+    return (
+      error.includes(ERROR_CODE_TEARDOWN_FAILED) ||
+      error.includes('Camera release failed') ||
+      error.includes('could not be released cleanly') ||
+      error.includes('could not be cleanly released')
+    );
+  }
+  return false;
+}
 
 /** Validation code to human-readable message mapping. */
 export const VALIDATION_MESSAGES: Record<number, string> = {
@@ -309,7 +350,9 @@ export class SessionLifecycleCoordinator {
           if (stopErr) parts.push(`stopAsync: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`);
           if (destroyErr) parts.push(`destroy: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`);
           this.teardownFailed = true;
-          this.teardownError = new Error(`Camera release failed (${parts.join(', ')})`);
+          const teardownErr = new Error(`Camera release failed (${parts.join(', ')})`);
+          (teardownErr as any).code = ERROR_CODE_TEARDOWN_FAILED;
+          this.teardownError = teardownErr;
           throw this.teardownError;
         } else {
           // Confirmed clean release of active SDK instance
@@ -343,7 +386,9 @@ export class SessionLifecycleCoordinator {
     }
 
     if (this.sessionState === 'degraded' || this.teardownFailed) {
-      throw new Error('Camera resource could not be released cleanly. Please restart the application.');
+      const degradedErr = new Error('Camera resource could not be released cleanly. Please restart the application.');
+      (degradedErr as any).code = ERROR_CODE_TEARDOWN_FAILED;
+      throw degradedErr;
     }
 
     const transition = transitionSessionState(this.sessionState, 'start');
@@ -401,7 +446,9 @@ export class SessionLifecycleCoordinator {
                 if (stopErr) parts.push(`stopAsync: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`);
                 if (destroyErr) parts.push(`destroy: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`);
                 this.teardownFailed = true;
-                this.teardownError = new Error(`Camera release failed on startup (${parts.join(', ')})`);
+                const teardownErr = new Error(`Camera release failed on startup (${parts.join(', ')})`);
+                (teardownErr as any).code = ERROR_CODE_TEARDOWN_FAILED;
+                this.teardownError = teardownErr;
               } else {
                 this.teardownFailed = false;
                 this.teardownError = null;

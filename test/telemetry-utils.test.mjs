@@ -4,6 +4,8 @@ import {
   STABILITY_CONFIDENCE_THRESHOLD,
   SIGNAL_FRESHNESS_TIMEOUT_MS,
   ACQUISITION_TIMEOUT_MS,
+  ERROR_CODE_TEARDOWN_FAILED,
+  isTeardownError,
   isConfidenceStable,
   isSampleFresh,
   normalizeCamera,
@@ -206,5 +208,32 @@ test('concurrent shutdown during startup locks state to shutting_down and reject
   const delayedSuccess = transitionSessionState(shutdown.nextState, 'start_success');
   assert.equal(delayedSuccess.allowed, false);
   assert.equal(delayedSuccess.nextState, 'shutting_down');
+});
+
+test('isTeardownError reliably classifies structured teardown errors and fallback messages', () => {
+  assert.equal(ERROR_CODE_TEARDOWN_FAILED, 'TEARDOWN_FAILED');
+
+  // Structured error objects with code
+  assert.equal(isTeardownError({ code: 'TEARDOWN_FAILED' }), true);
+  assert.equal(isTeardownError({ code: ERROR_CODE_TEARDOWN_FAILED, message: 'Any message' }), true);
+
+  // Nested teardownError structure
+  assert.equal(isTeardownError({ teardownError: { code: 'TEARDOWN_FAILED' } }), true);
+  assert.equal(isTeardownError({ message: 'Startup failed', teardownError: { code: ERROR_CODE_TEARDOWN_FAILED } }), true);
+
+  // Fallback messages
+  assert.equal(isTeardownError(new Error('Camera release failed (DirectShow graph locked)')), true);
+  assert.equal(isTeardownError({ message: 'Camera resource could not be cleanly released' }), true);
+  assert.equal(isTeardownError({ message: 'Camera resource could not be released cleanly' }), true);
+  assert.equal(isTeardownError('TEARDOWN_FAILED: DirectShow driver error'), true);
+  assert.equal(isTeardownError('Camera release failed'), true);
+
+  // Negative cases
+  assert.equal(isTeardownError(null), false);
+  assert.equal(isTeardownError(undefined), false);
+  assert.equal(isTeardownError(new Error('Normal network timeout')), false);
+  assert.equal(isTeardownError({ code: 'OTHER_CODE', message: 'Other error' }), false);
+  assert.equal(isTeardownError(123), false);
+  assert.equal(isTeardownError(false), false);
 });
 

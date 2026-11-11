@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { WaveformGraph } from './WaveformGraph';
 import {
   Activity,
@@ -11,7 +11,12 @@ import {
   Info,
   RotateCcw,
 } from 'lucide-react';
-import { ACQUISITION_TIMEOUT_MS, hasBreathingRate } from '../../../common/telemetry-utils';
+import {
+  ACQUISITION_TIMEOUT_MS,
+  hasBreathingRate,
+  isTeardownError,
+  ERROR_CODE_TEARDOWN_FAILED,
+} from '../../../common/telemetry-utils';
 
 type Metric = {
   breathingRate: number | null;
@@ -38,6 +43,29 @@ export default function App() {
   const [isStale, setIsStale] = useState(false);
   const [acquisitionTimedOut, setAcquisitionTimedOut] = useState(false);
   const [fatalSessionError, setFatalSessionError] = useState<string | null>(null);
+
+  // P1: Refs to prevent delayed restart timers from firing after fatal teardown
+  const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const fatalSessionErrorRef = useRef<string | null>(null);
+
+  // Synchronize fatalSessionError ref and abort any pending restart timers immediately
+  useEffect(() => {
+    fatalSessionErrorRef.current = fatalSessionError;
+    if (fatalSessionError && restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+  }, [fatalSessionError]);
+
+  // Clean up restart timer on unmount
+  useEffect(() => {
+    return () => {
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Load cameras
   const refreshCameras = () => {
@@ -71,11 +99,17 @@ export default function App() {
     });
 
     const offError = window.breatheSync.onError((payload: any) => {
-      const msg = payload.message || 'SmartSpectra error';
+      const msg = payload?.message || 'SmartSpectra error';
       setError(msg);
       // P1: Surface unconfirmed hardware teardown as a persistent fatal state
-      if (payload?.code === 'TEARDOWN_FAILED' || msg.includes('Camera release failed') || msg.includes('could not be released cleanly')) {
-        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      if (isTeardownError(payload)) {
+        const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
+        setFatalSessionError(fatalMsg);
+        fatalSessionErrorRef.current = fatalMsg;
+        if (restartTimerRef.current) {
+          clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = null;
+        }
       }
     });
 
@@ -152,8 +186,13 @@ export default function App() {
   }, [metric, running, isStale, acquisitionTimedOut]);
 
   async function start() {
-    if (fatalSessionError) {
+    if (fatalSessionError || fatalSessionErrorRef.current) {
       return;
+    }
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
     }
 
     setError('');
@@ -166,11 +205,17 @@ export default function App() {
       await window.breatheSync.start(cameraId);
       setRunning(true);
     } catch (e: any) {
-      const msg = e.message || 'Unable to start measurement';
+      const msg = e?.message || 'Unable to start measurement';
       setError(msg);
       setRunning(false);
-      if (msg.includes('Camera resource could not be released') || msg.includes('TEARDOWN_FAILED')) {
-        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      if (isTeardownError(e)) {
+        const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
+        setFatalSessionError(fatalMsg);
+        fatalSessionErrorRef.current = fatalMsg;
+        if (restartTimerRef.current) {
+          clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = null;
+        }
       }
     }
   }
@@ -179,10 +224,16 @@ export default function App() {
     try {
       await window.breatheSync.stop();
     } catch (e: any) {
-      const msg = e.message || 'Unable to stop cleanly';
+      const msg = e?.message || 'Unable to stop cleanly';
       setError(msg);
-      if (msg.includes('Camera release failed') || msg.includes('TEARDOWN_FAILED') || msg.includes('could not be cleanly released')) {
-        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      if (isTeardownError(e)) {
+        const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
+        setFatalSessionError(fatalMsg);
+        fatalSessionErrorRef.current = fatalMsg;
+        if (restartTimerRef.current) {
+          clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = null;
+        }
       }
     } finally {
       setRunning(false);
@@ -194,9 +245,31 @@ export default function App() {
   }
 
   async function restartMeasurement() {
-    await stop();
-    setTimeout(() => {
-      start();
+    if (fatalSessionError || fatalSessionErrorRef.current) {
+      return;
+    }
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+
+    try {
+      await stop();
+    } catch {
+      // stop() catches and handles fatal teardown state updates
+    }
+
+    // Abort restart if teardown failed during stop or a fatal error arrived
+    if (fatalSessionErrorRef.current) {
+      return;
+    }
+
+    restartTimerRef.current = setTimeout(() => {
+      restartTimerRef.current = null;
+      if (!fatalSessionErrorRef.current) {
+        start();
+      }
     }, 400);
   }
 
@@ -405,8 +478,8 @@ export default function App() {
         </div>
       </section>
 
-      {/* P1: Acquisition Timeout Recovery Banner */}
-      {acquisitionTimedOut && (
+      {/* P1: Acquisition Timeout Recovery Banner (hidden and disabled when fatal teardown error occurs) */}
+      {acquisitionTimedOut && !fatalSessionError && (
         <section className="acquisition-timeout-banner" role="alert">
           <AlertCircle size={20} className="timeout-icon" />
           <div className="timeout-content">
@@ -416,7 +489,12 @@ export default function App() {
               Please ensure your face and chest are well-lit, sit facing the webcam, and keep your upper torso in view.
             </p>
           </div>
-          <button type="button" className="restart-btn" onClick={restartMeasurement}>
+          <button
+            type="button"
+            className="restart-btn"
+            onClick={restartMeasurement}
+            disabled={Boolean(fatalSessionError)}
+          >
             <RotateCcw size={14} />
             <span>Restart Sensor</span>
           </button>

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   SessionLifecycleCoordinator,
   hasBreathingRate,
+  ERROR_CODE_TEARDOWN_FAILED,
+  isTeardownError,
 } from '../src/common/telemetry-utils.ts';
 
 // Helper to create a deferred promise that can be resolved/rejected on command
@@ -178,10 +180,13 @@ test('SessionLifecycleCoordinator: startup failure with teardown failure preserv
     assert.equal(err.message, 'Camera device busy');
     assert.ok(err.teardownError, 'teardownError must be attached to the startup error');
     assert.equal(err.teardownError.message.includes('DirectShow release fault'), true);
+    assert.equal(err.teardownError.code, ERROR_CODE_TEARDOWN_FAILED);
+    assert.equal(isTeardownError(err), true);
   }
 
   assert.equal(coordinator.getState(), 'degraded');
   assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getTeardownError()?.code, ERROR_CODE_TEARDOWN_FAILED);
 });
 
 test('SessionLifecycleCoordinator: stop called during in-flight startup does not deadlock', async () => {
@@ -464,12 +469,18 @@ test('SessionLifecycleCoordinator: total teardown failure (destroy rejects) mark
     async () => {
       await coordinator.stop();
     },
-    { message: /Camera release failed/ }
+    (err) => {
+      assert.match(err.message, /Camera release failed/);
+      assert.equal(err.code, ERROR_CODE_TEARDOWN_FAILED);
+      assert.equal(isTeardownError(err), true);
+      return true;
+    }
   );
 
   // Coordinator must NOT declare idle or report success
   assert.equal(coordinator.wasLastTeardownSuccessful(), false);
   assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.getTeardownError()?.code, ERROR_CODE_TEARDOWN_FAILED);
 
   // Any subsequent start must be blocked to prevent conflicting access to an unreleased camera
   await assert.rejects(
@@ -479,7 +490,12 @@ test('SessionLifecycleCoordinator: total teardown failure (destroy rejects) mark
         destroy: async () => {},
       }));
     },
-    { message: /Camera resource could not be released cleanly/ }
+    (err) => {
+      assert.match(err.message, /Camera resource could not be released cleanly/);
+      assert.equal(err.code, ERROR_CODE_TEARDOWN_FAILED);
+      assert.equal(isTeardownError(err), true);
+      return true;
+    }
   );
 });
 

@@ -15,6 +15,8 @@ import {
   getValidationMessage,
   normalizeBreathingMetrics,
   SessionLifecycleCoordinator,
+  ERROR_CODE_TEARDOWN_FAILED,
+  isTeardownError,
 } from '../common/telemetry-utils';
 
 let mainWindow: BrowserWindow | null = null;
@@ -164,15 +166,15 @@ ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
     return { started: true };
   } catch (error: any) {
     // P1: Check if startup failed AND camera release failed (coordinator in degraded state)
-    if (!coordinator.wasLastTeardownSuccessful() || coordinator.getState() === 'degraded') {
-      const teardownErrMsg = coordinator.getTeardownError()?.message || 'Teardown failure';
+    if (!coordinator.wasLastTeardownSuccessful() || coordinator.getState() === 'degraded' || isTeardownError(error)) {
+      const teardownErrMsg = coordinator.getTeardownError()?.message || error?.message || 'Teardown failure';
       send('breathesync:status', {
         kind: 'session',
         detail: 'Startup failed and camera release could not be confirmed. Please restart the application.',
         error: teardownErrMsg,
       });
       send('breathesync:error', {
-        code: 'TEARDOWN_FAILED',
+        code: ERROR_CODE_TEARDOWN_FAILED,
         message: `Startup failed and camera release could not be confirmed (${teardownErrMsg}). Please restart the application.`,
         retryable: false,
       });
@@ -201,7 +203,7 @@ ipcMain.handle('breathesync:stop', async (event) => {
       error: message,
     });
     send('breathesync:error', {
-      code: 'TEARDOWN_FAILED',
+      code: ERROR_CODE_TEARDOWN_FAILED,
       message: `Camera resource could not be cleanly released: ${message}`,
       retryable: false,
     });
