@@ -8,9 +8,12 @@ import {
 } from '@smartspectra/node-sdk';
 import { decodeMetrics } from '@smartspectra/node-sdk/messages';
 
+type SessionState = 'idle' | 'starting' | 'running' | 'stopping' | 'shutting_down';
+
 let mainWindow: BrowserWindow | null = null;
 let sdk: SmartSpectraSDK | null = null;
-let isStartingOrRunning = false;
+let sessionState: SessionState = 'idle';
+let isShuttingDown = false;
 
 function send(channel: string, payload: unknown) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -18,13 +21,13 @@ function send(channel: string, payload: unknown) {
   }
 }
 
-  function getLatest<T>(items?: T[] | null): T | null {
-    return items && items.length > 0 ? items[items.length - 1] : null;
-  }
+function getLatest<T>(items?: T[] | null): T | null {
+  return items && items.length > 0 ? items[items.length - 1] : null;
+}
 
 const VALIDATION_MESSAGES: Record<number, string> = {
   0: 'Optimal framing and lighting',
-  1: 'No face detected — please look at the camera',
+  1: 'No face detected — please look directly at the camera',
   2: 'Multiple faces detected — ensure only one person is in view',
   3: 'Face not centered — position yourself in the center',
   4: 'Adjust distance from camera',
@@ -61,101 +64,144 @@ function registerSdkEvents(instance: SmartSpectraSDK) {
     });
   });
 
-    instance.on('metrics', (buffer: Buffer, timestampUs: number) => {
-      try {
-        const decoded = decodeMetrics(buffer);
+  instance.on('metrics', (buffer: Buffer, timestampUs: number) => {
+    try {
+      const decoded = decodeMetrics(buffer);
 
-        const rate = getLatest(decoded?.breathing?.rate);
-        const chest = getLatest(decoded?.breathing?.upperTrace);
-        const abdomen = getLatest(decoded?.breathing?.lowerTrace);
+      const rate = getLatest(decoded?.breathing?.rate);
+      const chest = getLatest(decoded?.breathing?.upperTrace);
+      const abdomen = getLatest(decoded?.breathing?.lowerTrace);
 
-        send('breathesync:metrics', {
-          timestampUs,
-          breathingRate: rate?.value ?? null,
-          confidence: rate?.confidence ?? null,
-          stable: rate?.stable ?? false,
-          chestTrace: chest?.value ?? null,
-          abdomenTrace: abdomen?.value ?? null,
-          state: !rate ? 'acquiring' : rate.stable ? 'valid' : 'low_confidence',
-        });
-      } catch (error) {
-        send('breathesync:error', {
-          message: error instanceof Error ? error.message : 'Unable to decode SDK metrics',
-        });
-      }
-    });
-
-    instance.on('error', (code: unknown, message: unknown, retryable: unknown) => {
-      send('breathesync:error', {
-        code: String(code),
-        message: String(message),
-        retryable: Boolean(retryable),
+      send('breathesync:metrics', {
+        timestampUs,
+        receivedAtMs: Date.now(),
+        breathingRate: rate?.value ?? null,
+        confidence: rate?.confidence ?? null,
+        stable: rate?.stable ?? false,
+        chestTrace: chest?.value ?? null,
+        abdomenTrace: abdomen?.value ?? null,
+        state: !rate ? 'acquiring' : rate.stable ? 'valid' : 'low_confidence',
       });
+    } catch (error) {
+      send('breathesync:error', {
+        message: error instanceof Error ? error.message : 'Unable to decode SDK metrics',
+      });
+    }
+  });
+
+  instance.on('error', (code: unknown, message: unknown, retryable: unknown) => {
+    send('breathesync:error', {
+      code: String(code),
+      message: String(message),
+      retryable: Boolean(retryable),
     });
+  });
+}
+
+function validateIpcSender(event: Electron.IpcMainInvokeEvent) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('Unauthorized IPC invocation source');
+  }
+}
+
+ipcMain.handle('breathesync:cameras', async (event) => {
+  validateIpcSender(event);
+  try {
+    const cameras = SmartSpectraSDK.availableCameras();
+    return cameras.map((camera) => ({
+      id: camera.id,
+      label: camera.name || (camera as { label?: string }).label || 'Camera',
+    }));
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'Camera discovery failed');
+  }
+});
+
+ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
+  validateIpcSender(event);
+
+  if (isShuttingDown || sessionState === 'shutting_down') {
+    throw new Error('Application is shutting down.');
   }
 
-  ipcMain.handle('breathesync:cameras', async () => {
-    try {
-      const cameras = SmartSpectraSDK.availableCameras();
-      return cameras.map((camera) => ({
-        id: camera.id,
-        label: camera.name || (camera as { label?: string }).label || 'Camera',
-      }));
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : 'Camera discovery failed');
+  if (sessionState !== 'idle') {
+    throw new Error(`Cannot start measurement while session state is '${sessionState}'.`);
+  }
+
+  const apiKey = process.env.SMARTSPECTRA_API_KEY;
+  if (!apiKey) {
+    throw new Error('SMARTSPECTRA_API_KEY is missing. Add it to your local .env file and restart the app.');
+  }
+
+  if (!cameraId || typeof cameraId !== 'string') {
+    throw new Error('Select a camera before starting measurement.');
+  }
+
+  // Validate cameraId against discovered hardware devices
+  const available = SmartSpectraSDK.availableCameras();
+  const cameraFound = available.some((c) => c.id === cameraId);
+  if (!cameraFound) {
+    throw new Error('Selected camera ID does not match any detected hardware camera.');
+  }
+
+  sessionState = 'starting';
+  send('breathesync:status', { kind: 'session', detail: 'Initializing SmartSpectra camera session...' });
+
+  try {
+    sdk = new SmartSpectraSDK({
+      apiKey,
+      requestedMetrics: [...breathingMetrics],
+      enableTelemetry: false,
+    });
+
+    registerSdkEvents(sdk);
+    sdk.useCamera(CameraSelection.byId(cameraId));
+    await sdk.start();
+
+    sessionState = 'running';
+    send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
+    return { started: true };
+  } catch (error) {
+    sessionState = 'idle';
+    if (sdk) {
+      try { await sdk.stopAsync(); } catch { /* best-effort cleanup */ }
+      try { await sdk.destroy(); } catch { /* best-effort cleanup */ }
+      sdk = null;
     }
-  });
+    throw new Error(error instanceof Error ? error.message : 'SmartSpectra failed to start');
+  }
+});
 
-  ipcMain.handle('breathesync:start', async (_event, cameraId: string) => {
-    if (isStartingOrRunning) {
-      throw new Error('A measurement session is already starting or running.');
-    }
+async function cleanupSdk() {
+  const current = sdk;
+  sdk = null;
+  if (current) {
+    console.log('Stopping and destroying SmartSpectra session...');
+    try { await current.stopAsync(); } catch (e) { console.warn('SDK stop error:', e); }
+    try { await current.destroy(); } catch (e) { console.warn('SDK destroy error:', e); }
+    console.log('SmartSpectra cleanup completed.');
+  }
+}
 
-    const apiKey = process.env.SMARTSPECTRA_API_KEY;
-    if (!apiKey) {
-      throw new Error('SMARTSPECTRA_API_KEY is missing. Add it to your local .env file and restart the app.');
-    }
-    if (!cameraId || typeof cameraId !== 'string') {
-      throw new Error('Select a camera before starting measurement.');
-    }
+ipcMain.handle('breathesync:stop', async (event) => {
+  validateIpcSender(event);
 
-    isStartingOrRunning = true;
-    try {
-      sdk = new SmartSpectraSDK({
-        apiKey,
-        requestedMetrics: [...breathingMetrics],
-        enableTelemetry: false,
-      });
-
-      registerSdkEvents(sdk);
-      sdk.useCamera(CameraSelection.byId(cameraId));
-      await sdk.start();
-
-      send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
-      return { started: true };
-    } catch (error) {
-      isStartingOrRunning = false;
-      if (sdk) {
-        try { await sdk.stopAsync(); } catch { /* best-effort cleanup */ }
-        try { await sdk.destroy(); } catch { /* best-effort cleanup */ }
-        sdk = null;
-      }
-      throw new Error(error instanceof Error ? error.message : 'SmartSpectra failed to start');
-    }
-  });
-
-  ipcMain.handle('breathesync:stop', async () => {
-    const current = sdk;
-    sdk = null;
-    isStartingOrRunning = false;
-
-    if (current) {
-      try { await current.stopAsync(); } finally { await current.destroy(); }
-    }
-
-    send('breathesync:status', { kind: 'session', detail: 'Measurement stopped.' });
+  if (sessionState === 'idle') {
     return { stopped: true };
-  });
+  }
+
+  sessionState = 'stopping';
+  send('breathesync:status', { kind: 'session', detail: 'Stopping measurement and releasing camera...' });
+
+  try {
+    await cleanupSdk();
+  } finally {
+    sessionState = 'idle';
+  }
+
+  send('breathesync:status', { kind: 'session', detail: 'Measurement stopped. Camera released.' });
+  return { stopped: true };
+});
 
 async function createWindow() {
   console.log('Creating main BrowserWindow...');
@@ -203,15 +249,27 @@ app.whenReady().then(() => {
   createWindow().catch((err) => console.error('Error creating window:', err));
 });
 
-  app.on('before-quit', async () => {
-    const current = sdk;
-    sdk = null;
-    if (current) {
-      try { await current.stopAsync(); } catch { /* best-effort shutdown */ }
-      try { await current.destroy(); } catch { /* best-effort shutdown */ }
-    }
-  });
+// P0: Graceful asynchronous shutdown guaranteeing camera and SDK teardown before process exit
+app.on('before-quit', async (event) => {
+  if (isShuttingDown) {
+    return; // Teardown finished, allow exit
+  }
 
-  app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
-  });
+  event.preventDefault();
+  isShuttingDown = true;
+  sessionState = 'shutting_down';
+  console.log('App quitting: beginning graceful camera and SDK teardown...');
+
+  try {
+    await cleanupSdk();
+  } catch (error) {
+    console.error('Error during shutdown cleanup:', error);
+  } finally {
+    console.log('Teardown complete. Exiting application.');
+    app.quit();
+  }
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});

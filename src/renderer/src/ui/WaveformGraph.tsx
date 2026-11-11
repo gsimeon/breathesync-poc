@@ -16,9 +16,10 @@ interface WaveformGraphProps {
     state: string;
   } | null;
   running: boolean;
+  isStale?: boolean;
 }
 
-export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, running }) => {
+export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, running, isStale }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const historyRef = useRef<WaveformPoint[]>([]);
   const animFrameRef = useRef<number | null>(null);
@@ -105,7 +106,7 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
       const data = historyRef.current;
 
       if (!running || data.length < 2) {
-        // Flat resting line with scanning pulse
+        // Flat resting line
         ctx.strokeStyle = '#299B78';
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -118,14 +119,14 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
         ctx.font = '500 12px "DM Sans", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(
-          running ? 'CALIBRATING BREATHING SENSORS...' : 'START MEASUREMENT TO STREAM LIVE TRACES',
+          running ? 'ACQUIRING RESPIRATORY TRACES...' : 'STANDBY · START MEASUREMENT TO STREAM LIVE WAVEFORM',
           width / 2,
           midY - 18
         );
       } else {
-        // Calculate dynamic range for auto-scaling
-        let minVal = -1.0;
-        let maxVal = 1.0;
+        // Calculate dynamic range for auto-scaling with sane clamping
+        let minVal = -0.5;
+        let maxVal = 0.5;
 
         for (const pt of data) {
           if (pt.chest != null) {
@@ -138,7 +139,7 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
           }
         }
 
-        const range = Math.max(0.5, (maxVal - minVal) * 1.2);
+        const range = Math.max(0.6, (maxVal - minVal) * 1.25);
         const midVal = (maxVal + minVal) / 2;
 
         const getY = (val: number | null) => {
@@ -168,7 +169,6 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
               ctx.moveTo(x, y);
               started = true;
             } else {
-              // Smooth bezier curve between points
               const prevVal = selector(data[i - 1]);
               const prevX = (i - 1) * step;
               const prevY = getY(prevVal);
@@ -203,6 +203,17 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
 
         // Draw Chest Trace (Emerald Green)
         drawSeries((p) => p.chest, '#10B981', 'rgba(16, 185, 129, 0.7)');
+
+        // Stale warning overlay if frames stopped arriving
+        if (isStale) {
+          ctx.fillStyle = 'rgba(11, 19, 25, 0.65)';
+          ctx.fillRect(0, 0, width, height);
+
+          ctx.fillStyle = '#F59E0B';
+          ctx.font = '600 12px "DM Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('SIGNAL PAUSED · AWAITING FRESH SAMPLES', width / 2, height / 2);
+        }
       }
 
       ctx.restore();
@@ -217,7 +228,7 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [running]);
+  }, [running, isStale]);
 
   const latestChest = currentMetric?.chestTrace;
   const latestAbdomen = currentMetric?.abdomenTrace;
@@ -226,8 +237,10 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
     <div className="waveform-container">
       <div className="waveform-header">
         <div className="waveform-title-group">
-          <span className="live-pulse-dot" />
-          <span className="waveform-title">OSCILLOSCOPE WAVEFORM</span>
+          <span className={`live-pulse-dot ${isStale ? 'stale' : ''}`} />
+          <span className="waveform-title">
+            {isStale ? 'OSCILLOSCOPE WAVEFORM (PAUSED)' : 'OSCILLOSCOPE WAVEFORM'}
+          </span>
         </div>
         <div className="waveform-legend">
           <div className="legend-item chest">
@@ -246,4 +259,3 @@ export const WaveformGraph: React.FC<WaveformGraphProps> = ({ currentMetric, run
     </div>
   );
 };
-

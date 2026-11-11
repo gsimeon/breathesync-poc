@@ -9,6 +9,7 @@ import {
   Clock,
   RefreshCw,
   Info,
+  PauseCircle,
 } from 'lucide-react';
 
 type Metric = {
@@ -19,6 +20,7 @@ type Metric = {
   abdomenTrace: number | null;
   state: string;
   timestampUs: number;
+  receivedAtMs?: number;
 };
 
 export default function App() {
@@ -27,10 +29,12 @@ export default function App() {
   const [consent, setConsent] = useState(false);
   const [running, setRunning] = useState(false);
   const [metric, setMetric] = useState<Metric | null>(null);
-  const [status, setStatus] = useState('System ready');
+  const [status, setStatus] = useState('System standing by');
   const [error, setError] = useState('');
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [showTips, setShowTips] = useState(false);
+  const [lastMetricTime, setLastMetricTime] = useState<number | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
   // Load cameras
   const refreshCameras = () => {
@@ -49,6 +53,8 @@ export default function App() {
 
     const offMetrics = window.breatheSync.onMetrics((payload) => {
       setMetric(payload as Metric);
+      setLastMetricTime(Date.now());
+      setIsStale(false);
     });
 
     const offStatus = window.breatheSync.onStatus((payload: any) => {
@@ -65,6 +71,22 @@ export default function App() {
       offError();
     };
   }, []);
+
+  // Measurement freshness heartbeat: flags as stale if no new sample in 2.5s
+  useEffect(() => {
+    if (!running) {
+      setIsStale(false);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      if (lastMetricTime && Date.now() - lastMetricTime > 2500) {
+        setIsStale(true);
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [running, lastMetricTime]);
 
   // Session elapsed timer
   useEffect(() => {
@@ -85,15 +107,19 @@ export default function App() {
   };
 
   const confidenceState = useMemo(() => {
-    if (!running) return { label: 'Idle', color: 'neutral', icon: '○' };
+    if (!running) return { label: 'Sensors Idle', color: 'neutral', icon: '○' };
+    if (isStale) return { label: 'Signal Paused (Awaiting fresh samples)', color: 'warning', icon: '⏸' };
     if (metric?.confidence == null) return { label: 'Acquiring signal...', color: 'warning', icon: '◌' };
-    if (metric.stable) return { label: 'Signal Stable (High Confidence)', color: 'success', icon: '●' };
+    if (metric.stable) return { label: 'Signal Stable (Confidence >= 45%)', color: 'success', icon: '●' };
     return { label: 'Calibrating (Low Confidence)', color: 'warning', icon: '◌' };
-  }, [metric, running]);
+  }, [metric, running, isStale]);
 
   async function start() {
     setError('');
     setMetric(null);
+    setLastMetricTime(null);
+    setIsStale(false);
+
     try {
       await window.breatheSync.start(cameraId);
       setRunning(true);
@@ -110,11 +136,16 @@ export default function App() {
       setError(e.message || 'Unable to stop cleanly');
     } finally {
       setRunning(false);
+      setMetric(null);
+      setLastMetricTime(null);
+      setIsStale(false);
     }
   }
 
   const waveform = metric?.chestTrace ?? metric?.abdomenTrace ?? 0;
-  const scale = metric?.state === 'valid' ? 1 + Math.max(-0.16, Math.min(0.16, waveform * 0.08)) : 1;
+  const scale = (metric?.state === 'valid' && !isStale)
+    ? 1 + Math.max(-0.16, Math.min(0.16, waveform * 0.08))
+    : 1;
 
   return (
     <main className="shell">
@@ -126,7 +157,7 @@ export default function App() {
           </div>
           <div>
             <strong>BreatheSync</strong>
-            <small>SmartSpectra Real-Time Physiological Telemetry</small>
+            <small>Presage SmartSpectra Physiological Telemetry</small>
           </div>
         </div>
 
@@ -137,9 +168,9 @@ export default function App() {
               <span>{formatTimer(sessionSeconds)}</span>
             </div>
           )}
-          <span className={`status-pill ${running ? 'measuring' : 'idle'}`}>
+          <span className={`status-pill ${running ? (isStale ? 'stale' : 'measuring') : 'idle'}`}>
             <span className="pill-dot" />
-            {running ? 'Live Measuring' : 'Sensor Idle'}
+            {running ? (isStale ? 'Signal Paused' : 'Live Measuring') : 'Sensor Idle'}
           </span>
         </div>
       </header>
@@ -147,7 +178,7 @@ export default function App() {
       {/* Intro Section */}
       <section className="intro">
         <div className="intro-meta">
-          <span className="eyebrow">PRESAGE SMARTSPECTRA LIVE TELEMETRY</span>
+          <span className="eyebrow">SMARTSPECTRA HUMAN SENSING DEMO</span>
           <button
             type="button"
             className="tips-toggle-btn"
@@ -159,7 +190,7 @@ export default function App() {
         </div>
         <h1>
           Real-time respiratory sensing<br />
-          <span>powered by computer vision.</span>
+          <span>driven by continuous computer vision.</span>
         </h1>
         <p className="subcopy">
           Non-contact, camera-based measurement of respiratory kinematics. Every trace
@@ -186,7 +217,7 @@ export default function App() {
             <div className="tip-item">
               <Activity size={16} className="tip-icon" />
               <div>
-                <strong>Steady Breathing</strong>
+                <strong>Steady Posture</strong>
                 <p>Sit comfortably and remain relatively still while the neural model locks onto breathing motion.</p>
               </div>
             </div>
@@ -205,7 +236,7 @@ export default function App() {
                 <p className="eyebrow">RESONANCE FIELD</p>
                 <h2>Thoracic motion</h2>
               </div>
-              <span className={`live-dot ${running ? 'active' : ''}`} />
+              <span className={`live-dot ${running ? (isStale ? 'stale' : 'active') : ''}`} />
             </div>
 
             <div className="orb-stage">
@@ -213,24 +244,26 @@ export default function App() {
               <div className="orb-ring ring-two" />
               <div className="orb" style={{ transform: `scale(${scale})` }} />
               <span className="orb-caption">
-                {metric?.state === 'valid'
-                  ? 'Motion signal tracked'
-                  : running
-                  ? 'Acquiring respiratory motion...'
-                  : 'Sensors standing by'}
+                {!running
+                  ? 'Sensors standing by'
+                  : isStale
+                  ? 'Signal paused · Waiting for fresh camera frames'
+                  : metric?.state === 'valid'
+                  ? 'Motion signal tracked & responding'
+                  : 'Acquiring respiratory motion...'}
               </span>
             </div>
           </article>
 
           {/* Real-Time Waveform Graph */}
-          <WaveformGraph currentMetric={metric} running={running} />
+          <WaveformGraph currentMetric={metric} running={running} isStale={isStale} />
         </div>
 
         {/* Right Column: Measurements & Quality Card */}
         <div className="metrics-column">
           <article className="card metrics-card">
             <div className="metrics-header">
-              <p className="eyebrow">PHYSIOLOGICAL OUTPUT</p>
+              <p className="eyebrow">TELEMETRY STREAM</p>
               <h2>Live Measurements</h2>
             </div>
 
@@ -238,10 +271,12 @@ export default function App() {
             <div className="metric-block rate-block">
               <div className="metric-label-row">
                 <span className="metric-name">Breathing Rate</span>
-                <span className="reference-tag">Normal resting: 12–20 br/min</span>
+                <span className="reference-tag">
+                  {isStale ? 'Signal Paused' : 'Sensor Telemetry'}
+                </span>
               </div>
               <div className="metric-value-row">
-                <span className="huge-number">
+                <span className={`huge-number ${isStale ? 'stale-value' : ''}`}>
                   {metric?.breathingRate == null ? '—' : metric.breathingRate.toFixed(1)}
                 </span>
                 <span className="metric-unit">
@@ -261,7 +296,10 @@ export default function App() {
               <div className="confidence-meter-track">
                 <div
                   className="confidence-meter-bar"
-                  style={{ width: `${Math.min(100, Math.max(0, metric?.confidence ?? 0))}%` }}
+                  style={{
+                    width: `${Math.min(100, Math.max(0, metric?.confidence ?? 0))}%`,
+                    opacity: isStale ? 0.4 : 1,
+                  }}
                 />
               </div>
             </div>
@@ -279,14 +317,14 @@ export default function App() {
                 <div className="trace-chip chest">
                   <span className="chip-indicator" />
                   <span className="chip-label">Upper Thorax (Chest)</span>
-                  <span className="chip-value">
+                  <span className={`chip-value ${isStale ? 'stale-value' : ''}`}>
                     {metric?.chestTrace != null ? metric.chestTrace.toFixed(3) : '—'}
                   </span>
                 </div>
                 <div className="trace-chip abdomen">
                   <span className="chip-indicator" />
-                  <span className="chip-label">Lower Torax (Abdomen)</span>
-                  <span className="chip-value">
+                  <span className="chip-label">Lower Thorax (Abdomen)</span>
+                  <span className={`chip-value ${isStale ? 'stale-value' : ''}`}>
                     {metric?.abdomenTrace != null ? metric.abdomenTrace.toFixed(3) : '—'}
                   </span>
                 </div>

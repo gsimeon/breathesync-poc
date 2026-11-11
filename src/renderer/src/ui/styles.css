@@ -25,7 +25,9 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 0;
+  width: 100%;
+  overflow-x: hidden;
   min-height: 100vh;
   font-family: var(--font-main);
   color: var(--color-text-main);
@@ -120,6 +122,12 @@ body {
   color: #065F46;
 }
 
+.status-pill.stale {
+  border-color: #FDE68A;
+  background: #FFFBEB;
+  color: #92400E;
+}
+
 .pill-dot {
   width: 8px;
   height: 8px;
@@ -131,6 +139,27 @@ body {
   background: #10B981;
   box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
   animation: pulse-dot 1.8s infinite;
+}
+
+.status-pill.stale .pill-dot {
+  background: #F59E0B;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+
+.live-dot.stale {
+  background: #F59E0B;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+
+.live-pulse-dot.stale {
+  background: #F59E0B;
+  box-shadow: 0 0 8px #F59E0B;
+}
+
+.stale-value {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  transition: opacity 0.2s ease;
 }
 
 @keyframes pulse-dot {

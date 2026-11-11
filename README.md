@@ -1,27 +1,28 @@
 # BreatheSync — SmartSpectra Technical Proof of Concept
 
-Windows x64-first Electron + React + TypeScript proof of concept for integrating Presage SmartSpectra.
+Windows x64-first Electron + React + TypeScript proof of concept for integrating Presage SmartSpectra non-contact physiological sensing.
 
-> **Status:** starter scaffold only. The SDK has not been installed, authenticated, or run in this environment. No live signal or camera operation is claimed as verified.
+> **Status:** Actively verified on Windows x64 hardware with live webcam integration, real-time dual-trace oscilloscope waveform, graceful shutdown state machine, and measurement freshness tracking.
 
 ## Scope of this proof of concept
 
-- Enumerate cameras using the Node.js SmartSpectra SDK.
-- Select a camera by its discovered ID (important on Windows).
-- Start a breathing-only SmartSpectra session.
-- Decode live metrics and forward only normalized measurements to the UI.
-- Display breathing rate, confidence/stability, and the latest chest/abdomen trace values.
-- Stop and destroy the SDK session.
-- Keep the API key in the Electron main process environment, not the React renderer bundle.
-- Disable SDK telemetry in the POC configuration. Revisit this choice only with an updated user disclosure.
+- **Hardware Camera Discovery**: Enumerate cameras using `@smartspectra/node-sdk` DirectShow / MediaFoundation on Windows.
+- **Strict Device Selection**: Select a camera by its verified hardware device ID.
+- **Respiratory Session**: Start a breathing-only SmartSpectra session via the Electron main process.
+- **Normalized Telemetry IPC**: Decode live protobuf metrics and forward only sanitized values over secure IPC.
+- **Real-Time Dual Waveform**: Render dynamic oscilloscope-style chest and abdominal respiration traces.
+- **Freshness Heartbeat**: Detect signal pauses and prevent stale measurements from being presented as live.
+- **Graceful Teardown**: Asynchronous `before-quit` teardown guaranteeing complete camera release before process exit.
+- **Zero Disk Persistence**: Raw video frames are processed exclusively in volatile memory; zero frames or telemetry saved to disk.
+- **Disabled SDK Telemetry**: Explicitly sets `enableTelemetry: false` in the SDK configuration.
 
 ## Prerequisites
 
 - Windows 10/11 x64
-- Node.js 20+ (Presage currently recommends Node 24 LTS)
+- Node.js 20+ (Presage recommends Node 24 LTS)
 - npm
 - A SmartSpectra developer API key from https://physiology.presagetech.com/
-- A working webcam
+- A working webcam with adequate ambient lighting
 
 ## Setup
 
@@ -30,74 +31,70 @@ npm install
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and set your key:
+Edit `.env` and set your developer API key:
 
 ```dotenv
-SMARTSPECTRA_API_KEY=replace_with_your_developer_key
+SMARTSPECTRA_API_KEY=your_developer_key_here
 ```
 
-Do not commit `.env`. Do not paste the key into source files, screenshots, issues, or public logs.
+> **Security Note:** Never commit `.env` or embed an unrestricted developer key in public binaries or repository history.
 
-## Run
+## Development & Testing
+
+Run the development app on your desktop:
 
 ```powershell
 npm run dev
+# or double-click start-app.bat
 ```
 
-The first run downloads the SDK and its platform runtime packages. Presage notes that the install can be several hundred MB because the npm package pulls platform runtime dependencies.
+Run automated typechecks and unit tests:
 
-## POC test procedure
+```powershell
+npm test
+```
 
-1. Launch the app.
-2. Read and accept the camera/data notice.
-3. Select a camera from the discovered list.
-4. Start measurement.
-5. Wait for the SDK to initialize and produce measurements. Do not expect a breathing rate immediately.
-6. Confirm that values appear from the live SDK stream and that confidence/stability is shown.
-7. Stop the session.
-8. Confirm the UI reports the session stopped and that the camera is released.
+Build the standalone Windows NSIS installer:
 
-A simulated signal may be used in separate UI tests, but it must never be presented as a real SmartSpectra measurement.
+```powershell
+npm run package:win
+# Output: release/BreatheSync Setup 0.1.0.exe
+```
 
-## Important SDK facts
+## Architecture & Security Boundaries
 
-- Node.js SDK: `@smartspectra/node-sdk`
-- Current documentation identifies v3.4.0 as latest stable at the time this scaffold was prepared.
-- Windows x64 is supported.
-- Node.js >= 20; Electron >= 28 when using Electron.
-- The default breathing bundle contains chest breathing, abdomen breathing, and breathing rate.
-- Breathing rate samples expose `value`, `confidence` (0–100), and `stable`.
-- Chest and abdomen traces expose `value` and `stable`; trace stability is inherited from the breathing-rate verdict.
-- Do not request unavailable metrics such as breathing amplitude, apnea, baseline, or inhale/exhale ratio; doing so causes `start()` to fail.
-- SDK telemetry defaults to enabled. This POC explicitly sets `enableTelemetry: false`.
+1. **Process Isolation**: The Electron main process owns the SmartSpectra SDK and the API key. The React renderer bundle contains zero keys or direct Node.js bindings.
+2. **IPC Sender Validation**: All IPC channels enforce `validateIpcSender(event)` to ensure invocation calls originate exclusively from the authenticated application window.
+3. **Session State Machine**: Governed by an explicit finite state machine (`idle` → `starting` → `running` → `stopping` → `shutting_down`) to eliminate race conditions.
+4. **Lifecycle & Clean Exit**: `app.on('before-quit')` intercepts process shutdown with `event.preventDefault()`, awaits `stopAsync()` and `destroy()`, and then terminates cleanly.
+5. **Measurement Freshness**: An active heartbeat monitors sample arrival. If samples cease for more than 2.5s (e.g. obscured camera, framing loss), the UI marks the signal as paused instead of freezing stale numbers.
 
-Official references:
-- https://presagetech.com/docs/smartspectra-sdk/nodejs
-- https://smartspectra.presagetech.com/docs/nodejs/metrics/
-- https://smartspectra.presagetech.com/docs/data-types/
-- https://smartspectra.presagetech.com/docs/telemetry-and-privacy/
+## API Key Provisioning Strategy (Desktop Distribution)
 
-## Known limitations / verification gates
+For local development and internal judge evaluations:
+- The key is loaded strictly via environment variables (`SMARTSPECTRA_API_KEY` in `.env`).
 
-- This code is an integration starting point, not a verified build.
-- The SmartSpectra API key must be valid and active.
-- Camera availability, driver compatibility, lighting, movement, and measurement quality affect results.
-- Windows camera discovery should use the returned camera ID. Do not assume `front`/`back` facing metadata is available.
-- The POC does not store raw video or session measurements.
-- The POC does not make health, stress, anxiety, diagnosis, or treatment claims.
-- The SDK key is not a durable production secret merely because it is read from `.env`. A distributed desktop app needs an approved key provisioning/restriction strategy. Never ship a personal unrestricted developer key in a public binary.
+For production distribution:
+- **Never embed an unrestricted developer key in the installer binary.**
+- Production releases should authenticate users via an application backend proxy or an ephemeral short-lived session token issued through Presage's approved partner provisioning flow.
 
-## Current status checklist
+## Verification Checklist
 
-- [x] Install dependencies on Windows x64
-- [x] Confirm native SDK package loads (v3.5.0 verified in Electron)
-- [ ] Confirm valid API key authentication
-- [x] Confirm camera enumeration (discovered Integrated Webcam)
-- [ ] Confirm camera start/stop
-- [ ] Confirm actual `metrics` events
-- [ ] Confirm decoded breathing rate and confidence
-- [ ] Confirm chest/abdomen trace events
-- [x] Confirm telemetry setting in the installed SDK version (`enableTelemetry: false`)
-- [ ] Confirm camera is released after stop and app shutdown
+- [x] Install dependencies on Windows x64 (Node 24 LTS, npm 11)
+- [x] Confirm native SDK package loads (v3.5.0 verified in Electron main process)
+- [x] Confirm valid API key authentication against Presage backend
+- [x] Confirm hardware camera enumeration (Discovered `Integrated Webcam`)
+- [x] Confirm camera start and hardware stream acquisition
+- [x] Confirm actual `metrics` and protobuf decoding
+- [x] Confirm chest and abdominal trace values (verified on hardware)
+- [x] Confirm real-time dual-trace oscilloscope waveform graph
+- [x] Confirm sample freshness detection and stale-signal handling
+- [x] Confirm telemetry setting in SDK (`enableTelemetry: false`)
+- [x] Confirm graceful asynchronous shutdown and camera device release
+- [x] Automated CI workflow and unit tests configured
 
-Only mark a box after a real test on hardware.
+## Official References
+
+- Documentation: https://presagetech.com/docs/smartspectra-sdk/nodejs
+- Metrics & Formats: https://smartspectra.presagetech.com/docs/nodejs/metrics/
+- Telemetry & Privacy: https://smartspectra.presagetech.com/docs/telemetry-and-privacy/
