@@ -483,6 +483,65 @@ test('SessionLifecycleCoordinator: total teardown failure (destroy rejects) mark
   );
 });
 
+test('SessionLifecycleCoordinator: shutdown after failed teardown preserves original failure record and completes shutdown', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+
+  const brokenSdk = {
+    start: async () => {},
+    stopAsync: async () => {
+      throw new Error('Hardware camera stream failed to close');
+    },
+    destroy: async () => {
+      throw new Error('DirectShow filter graph locked');
+    },
+  };
+
+  // 1. Start an SDK session
+  await coordinator.start(() => brokenSdk);
+  assert.equal(coordinator.getState(), 'running');
+
+  // 2. Make stopAsync() and destroy() fail
+  await assert.rejects(
+    async () => {
+      await coordinator.stop();
+    },
+    { message: /Camera release failed/ }
+  );
+
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  const failureError = coordinator.getTeardownError();
+  assert.ok(failureError);
+
+  // 3. Call shutdown() after failed teardown
+  await assert.rejects(
+    async () => {
+      await coordinator.shutdown();
+    },
+    { message: /Camera release failed/ }
+  );
+
+  // 4. Verify original teardown failure remains recorded
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getTeardownError(), failureError);
+
+  // 5. Verify shutdown completes and no new session can start
+  assert.equal(coordinator.isShutdownInitiated(), true);
+  assert.equal(coordinator.isShutdownComplete(), true);
+  assert.equal(coordinator.getState(), 'shutting_down');
+
+  // Any subsequent start attempt must be strictly rejected
+  await assert.rejects(
+    async () => {
+      await coordinator.start(() => ({
+        start: async () => {},
+        destroy: async () => {},
+      }));
+    },
+    { message: /Application is shutting down|Camera resource could not be released/ }
+  );
+});
+
 test('SessionLifecycleCoordinator: startup failure with total teardown failure marks state degraded and prevents re-entry', async () => {
   const coordinator = new SessionLifecycleCoordinator();
 

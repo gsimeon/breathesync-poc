@@ -37,6 +37,7 @@ export default function App() {
   const [lastMetricTime, setLastMetricTime] = useState<number | null>(null);
   const [isStale, setIsStale] = useState(false);
   const [acquisitionTimedOut, setAcquisitionTimedOut] = useState(false);
+  const [fatalSessionError, setFatalSessionError] = useState<string | null>(null);
 
   // Load cameras
   const refreshCameras = () => {
@@ -70,7 +71,12 @@ export default function App() {
     });
 
     const offError = window.breatheSync.onError((payload: any) => {
-      setError(payload.message || 'SmartSpectra error');
+      const msg = payload.message || 'SmartSpectra error';
+      setError(msg);
+      // P1: Surface unconfirmed hardware teardown as a persistent fatal state
+      if (payload?.code === 'TEARDOWN_FAILED' || msg.includes('Camera release failed') || msg.includes('could not be released cleanly')) {
+        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      }
     });
 
     return () => {
@@ -146,6 +152,10 @@ export default function App() {
   }, [metric, running, isStale, acquisitionTimedOut]);
 
   async function start() {
+    if (fatalSessionError) {
+      return;
+    }
+
     setError('');
     setMetric(null);
     setLastMetricTime(null);
@@ -156,8 +166,12 @@ export default function App() {
       await window.breatheSync.start(cameraId);
       setRunning(true);
     } catch (e: any) {
-      setError(e.message || 'Unable to start measurement');
+      const msg = e.message || 'Unable to start measurement';
+      setError(msg);
       setRunning(false);
+      if (msg.includes('Camera resource could not be released') || msg.includes('TEARDOWN_FAILED')) {
+        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      }
     }
   }
 
@@ -165,7 +179,11 @@ export default function App() {
     try {
       await window.breatheSync.stop();
     } catch (e: any) {
-      setError(e.message || 'Unable to stop cleanly');
+      const msg = e.message || 'Unable to stop cleanly';
+      setError(msg);
+      if (msg.includes('Camera release failed') || msg.includes('TEARDOWN_FAILED') || msg.includes('could not be cleanly released')) {
+        setFatalSessionError('Camera release could not be confirmed. Close and restart BreatheSync.');
+      }
     } finally {
       setRunning(false);
       setMetric(null);
@@ -423,7 +441,7 @@ export default function App() {
                 id="camera"
                 value={cameraId}
                 onChange={(e) => setCameraId(e.target.value)}
-                disabled={running}
+                disabled={running || Boolean(fatalSessionError)}
               >
                 {cameras.length === 0 && <option value="">No camera detected</option>}
                 {cameras.map((camera) => (
@@ -436,7 +454,7 @@ export default function App() {
                 type="button"
                 className="refresh-btn"
                 onClick={refreshCameras}
-                disabled={running}
+                disabled={running || Boolean(fatalSessionError)}
                 title="Refresh camera list"
               >
                 <RefreshCw size={14} />
@@ -450,7 +468,7 @@ export default function App() {
                 type="checkbox"
                 checked={consent}
                 onChange={(e) => setConsent(e.target.checked)}
-                disabled={running}
+                disabled={running || Boolean(fatalSessionError)}
               />
               <div className="consent-text">
                 <ShieldCheck size={16} className="consent-icon" />
@@ -469,7 +487,7 @@ export default function App() {
               type="button"
               className="start-btn"
               onClick={start}
-              disabled={!consent || !cameraId}
+              disabled={!consent || !cameraId || Boolean(fatalSessionError)}
             >
               Start Real-Time Measurement
             </button>
@@ -480,6 +498,19 @@ export default function App() {
           )}
           <span className="status-badge-inline">{status}</span>
         </div>
+
+        {fatalSessionError && (
+          <div className="fatal-error-banner" role="alert">
+            <AlertCircle size={20} className="fatal-error-icon" />
+            <div className="fatal-error-content">
+              <strong>Hardware Teardown Alert</strong>
+              <p>{fatalSessionError}</p>
+              <p className="fatal-error-subtext">
+                To protect hardware devices and prevent resource locks, camera restart is disabled. Please close and relaunch BreatheSync.
+              </p>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="error-banner" role="alert">

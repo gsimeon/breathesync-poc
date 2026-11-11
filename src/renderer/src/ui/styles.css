@@ -827,6 +827,51 @@ select:focus {
   margin-top: 16px;
 }
 
+/* Fatal Error Banner (Degraded / Teardown Failed) */
+.fatal-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: #FFF1F2;
+  border: 2px solid #F43F5E;
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-top: 18px;
+  box-shadow: 0 4px 16px rgba(244, 63, 94, 0.12);
+}
+
+.fatal-error-icon {
+  color: #E11D48;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.fatal-error-content {
+  flex: 1;
+}
+
+.fatal-error-content strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: #9F1239;
+}
+
+.fatal-error-content p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #BE123C;
+  font-weight: 500;
+}
+
+.fatal-error-content .fatal-error-subtext {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #881337;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
 .error-icon {
   color: #DC2626;
   flex-shrink: 0;
