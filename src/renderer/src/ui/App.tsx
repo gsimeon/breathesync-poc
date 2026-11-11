@@ -11,7 +11,7 @@ import {
   Info,
   RotateCcw,
 } from 'lucide-react';
-import { ACQUISITION_TIMEOUT_MS } from '../../../common/telemetry-utils';
+import { ACQUISITION_TIMEOUT_MS, hasBreathingRate } from '../../../common/telemetry-utils';
 
 type Metric = {
   breathingRate: number | null;
@@ -58,9 +58,9 @@ export default function App() {
       setMetric(metricPayload);
       setLastMetricTime(Date.now());
       setIsStale(false);
-      // P1: Only a valid breathing-rate measurement clears acquisition timeout.
+      // P1: Only a finite, positive breathing rate measurement clears acquisition timeout.
       // Trace-only events (e.g. chest/abdomen position without a computed rate) must NOT clear it.
-      if (metricPayload?.breathingRate != null) {
+      if (hasBreathingRate(metricPayload)) {
         setAcquisitionTimedOut(false);
       }
     });
@@ -98,7 +98,7 @@ export default function App() {
 
   // P1: Initial acquisition timeout: arms once per measurement session until a valid breathing rate arrives.
   // Trace-only frames do NOT reset this timer.
-  const hasValidBreathingRate = metric?.breathingRate != null;
+  const hasValidBreathingRate = hasBreathingRate(metric);
 
   useEffect(() => {
     if (!running) {

@@ -256,13 +256,22 @@ app.whenReady().then(() => {
   createWindow().catch((err) => console.error('Error creating window:', err));
 });
 
-// P0: Graceful asynchronous shutdown guaranteeing camera and SDK teardown before process exit
+// P0: Graceful asynchronous shutdown coordinating camera and SDK teardown before process exit
 app.on('before-quit', async (event) => {
-  if (coordinator.isShutdown()) {
-    return; // Teardown completed, proceed with exit
+  if (coordinator.isShutdownComplete()) {
+    return; // Teardown fully completed, proceed with normal exit
   }
 
+  // Prevent immediate process exit while teardown is pending
   event.preventDefault();
+
+  if (coordinator.isShutdownInitiated()) {
+    console.log('Teardown already initiated; awaiting completion before quit...');
+    await coordinator.shutdown();
+    app.quit();
+    return;
+  }
+
   console.log('App quitting: beginning graceful camera and SDK teardown...');
 
   try {

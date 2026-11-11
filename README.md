@@ -12,7 +12,7 @@ Windows x64-first Electron + React + TypeScript proof of concept for integrating
 - **Normalized Telemetry IPC**: Decode live protobuf metrics and forward only sanitized values over secure IPC.
 - **Real-Time Dual Waveform**: Render dynamic oscilloscope-style chest and abdominal respiration traces.
 - **Freshness Heartbeat**: Detect signal pauses and prevent stale measurements from being presented as live.
-- **Graceful Teardown**: Asynchronous `before-quit` teardown guaranteeing complete camera release before process exit.
+- **Graceful Application Teardown**: Asynchronous `before-quit` handler coordinating camera and SDK teardown before standard process exit (OS-level sudden termination, logoff, or forced kill may bypass application lifecycle hooks per standard Electron and Windows behavior).
 - **Zero Disk Persistence**: Raw video frames are processed exclusively in volatile memory; zero frames or telemetry saved to disk.
 - **Disabled SDK Telemetry**: Explicitly sets `enableTelemetry: false` in the SDK configuration.
 
@@ -66,7 +66,7 @@ npm run package:win
 1. **Process Isolation**: The Electron main process owns the SmartSpectra SDK and the API key. The React renderer bundle contains zero keys or direct Node.js bindings.
 2. **IPC Sender Validation**: All IPC channels enforce `validateIpcSender(event)` to ensure invocation calls originate exclusively from the authenticated application window.
 3. **Session State Machine**: Governed by an explicit finite state machine (`idle` → `starting` → `running` → `stopping` → `shutting_down`) to eliminate race conditions.
-4. **Lifecycle & Clean Exit**: `app.on('before-quit')` intercepts process shutdown with `event.preventDefault()`, awaits `stopAsync()` and `destroy()`, and then terminates cleanly.
+4. **Lifecycle & Clean Exit**: `app.on('before-quit')` intercepts standard application shutdown with `event.preventDefault()`, tracks shutdown completion state, awaits `stopAsync()` and `destroy()`, and then permits process exit. Note that sudden OS-level shutdown, crash, or `SIGKILL` can bypass Electron lifecycle hooks.
 5. **Measurement Freshness**: An active heartbeat monitors sample arrival. If samples cease for more than 2.5s (e.g. obscured camera, framing loss), the UI marks the signal as paused instead of freezing stale numbers.
 
 ## API Key Provisioning Strategy (Desktop Distribution)
@@ -90,7 +90,7 @@ For production distribution:
 - [x] Confirm real-time dual-trace oscilloscope waveform graph
 - [x] Confirm sample freshness detection and stale-signal handling
 - [x] Confirm telemetry setting in SDK (`enableTelemetry: false`)
-- [x] Confirm graceful asynchronous shutdown and camera device release
+- [x] Confirm graceful asynchronous application shutdown and camera device release on standard exit
 - [x] Automated CI workflow and unit tests configured
 
 ## Official References

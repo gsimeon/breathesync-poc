@@ -127,18 +127,22 @@ export function normalizeBreathingMetrics(
   const chest = getLatest(decoded?.breathing?.upperTrace);
   const abdomen = getLatest(decoded?.breathing?.lowerTrace);
 
+  const rawRate = rate?.value;
+  const isRateValid = typeof rawRate === 'number' && Number.isFinite(rawRate) && rawRate > 0;
+  const breathingRate = isRateValid ? rawRate : null;
+
   const confidence = rate?.confidence ?? null;
   const stable = rate?.stable ?? isConfidenceStable(confidence);
 
   return {
     timestampUs,
     receivedAtMs,
-    breathingRate: rate?.value ?? null,
+    breathingRate,
     confidence,
     stable,
     chestTrace: chest?.value ?? null,
     abdomenTrace: abdomen?.value ?? null,
-    state: !rate ? 'acquiring' : stable ? 'valid' : 'low_confidence',
+    state: !breathingRate ? 'acquiring' : stable ? 'valid' : 'low_confidence',
   };
 }
 
@@ -191,9 +195,10 @@ export function transitionSessionState(
   }
 }
 
-/** Check if a normalized telemetry object or metric sample has a valid breathing rate. */
+/** Check if a normalized telemetry object or metric sample has a valid breathing rate (finite, positive number). */
 export function hasBreathingRate(sample?: { breathingRate?: number | null } | null): boolean {
-  return sample?.breathingRate != null;
+  const rate = sample?.breathingRate;
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
 }
 
 export interface ManagedSdkInstance {
@@ -212,7 +217,9 @@ export class SessionLifecycleCoordinator {
   private sdk: ManagedSdkInstance | null = null;
   private activeStartupPromise: Promise<void> | null = null;
   private activeCleanupPromise: Promise<void> | null = null;
-  private isShuttingDown: boolean = false;
+  private activeShutdownPromise: Promise<void> | null = null;
+  private isShutdownInitiatedState: boolean = false;
+  private isShutdownCompleteState: boolean = false;
 
   getState(): SessionState {
     return this.sessionState;
@@ -223,7 +230,15 @@ export class SessionLifecycleCoordinator {
   }
 
   isShutdown(): boolean {
-    return this.isShuttingDown;
+    return this.isShutdownInitiatedState;
+  }
+
+  isShutdownInitiated(): boolean {
+    return this.isShutdownInitiatedState;
+  }
+
+  isShutdownComplete(): boolean {
+    return this.isShutdownCompleteState;
   }
 
   async cleanup(): Promise<void> {
@@ -263,6 +278,11 @@ export class SessionLifecycleCoordinator {
     instanceFactory: () => Promise<ManagedSdkInstance> | ManagedSdkInstance,
     onStarted?: () => void
   ): Promise<void> {
+    // Guard against re-entry while previous session cleanup is still finalizing
+    if (this.activeCleanupPromise) {
+      throw new Error('Previous session teardown in progress. Please wait before starting.');
+    }
+
     const transition = transitionSessionState(this.sessionState, 'start');
     if (!transition.allowed) {
       throw new Error(transition.error || `Cannot start measurement in state '${this.sessionState}'.`);
@@ -288,9 +308,13 @@ export class SessionLifecycleCoordinator {
       } catch (error) {
         if (this.sessionState === 'starting') {
           this.sessionState = 'idle';
-          // Clean up the instance directly without joining a cleanup promise
+          // Clean up the instance directly without joining a cleanup promise.
+          // P1: Attempt both stopAsync() and destroy() independently in case resources were partially acquired.
           if (instance) {
             this.sdk = null;
+            if (typeof instance.stopAsync === 'function') {
+              try { await instance.stopAsync(); } catch (e) { console.warn('SDK stop error on startup failure:', e); }
+            }
             if (typeof instance.destroy === 'function') {
               try { await instance.destroy(); } catch (e) { console.warn('SDK destroy error on startup failure:', e); }
             }
@@ -325,19 +349,29 @@ export class SessionLifecycleCoordinator {
     try {
       await this.cleanup();
     } finally {
-      if (!this.isShuttingDown) {
+      if (!this.isShutdownInitiatedState) {
         this.sessionState = 'idle';
       }
     }
   }
 
   async shutdown(): Promise<void> {
-    if (this.isShuttingDown) {
-      return this.cleanup();
+    if (this.activeShutdownPromise) {
+      return this.activeShutdownPromise;
     }
-    this.isShuttingDown = true;
+
+    this.isShutdownInitiatedState = true;
     this.sessionState = 'shutting_down';
-    return this.cleanup();
+
+    this.activeShutdownPromise = (async () => {
+      try {
+        await this.cleanup();
+      } finally {
+        this.isShutdownCompleteState = true;
+      }
+    })();
+
+    return this.activeShutdownPromise;
   }
 }
 
