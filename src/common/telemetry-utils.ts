@@ -307,17 +307,27 @@ export class SessionLifecycleCoordinator {
         }
       } catch (error) {
         if (this.sessionState === 'starting') {
-          this.sessionState = 'idle';
-          // Clean up the instance directly without joining a cleanup promise.
-          // P1: Attempt both stopAsync() and destroy() independently in case resources were partially acquired.
+          // P1: Track startup-failure teardown as activeCleanupPromise and keep state non-idle
+          // until both teardown operations settle, completely preventing a concurrent second SDK start.
           if (instance) {
             this.sdk = null;
-            if (typeof instance.stopAsync === 'function') {
-              try { await instance.stopAsync(); } catch (e) { console.warn('SDK stop error on startup failure:', e); }
-            }
-            if (typeof instance.destroy === 'function') {
-              try { await instance.destroy(); } catch (e) { console.warn('SDK destroy error on startup failure:', e); }
-            }
+            const failedInstance = instance;
+            this.activeCleanupPromise = (async () => {
+              if (typeof failedInstance.stopAsync === 'function') {
+                try { await failedInstance.stopAsync(); } catch (e) { console.warn('SDK stop error on startup failure:', e); }
+              }
+              if (typeof failedInstance.destroy === 'function') {
+                try { await failedInstance.destroy(); } catch (e) { console.warn('SDK destroy error on startup failure:', e); }
+              }
+            })().finally(() => {
+              this.activeCleanupPromise = null;
+              if (this.sessionState === 'starting') {
+                this.sessionState = 'idle';
+              }
+            });
+            await this.activeCleanupPromise;
+          } else {
+            this.sessionState = 'idle';
           }
         }
         throw error;

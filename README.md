@@ -2,7 +2,7 @@
 
 Windows x64-first Electron + React + TypeScript proof of concept for integrating Presage SmartSpectra non-contact physiological sensing.
 
-> **Status:** Actively verified on Windows x64 hardware with live webcam integration, real-time dual-trace oscilloscope waveform, graceful shutdown state machine, and measurement freshness tracking.
+> **Status:** Technical proof of concept with automated Windows CI validation (typecheck, 24 unit tests, NSIS installer build) and preliminary Windows x64 local testing with an integrated webcam. Hardware verification across arbitrary external cameras and clean machine setups is ongoing.
 
 ## Scope of this proof of concept
 
@@ -81,17 +81,17 @@ For production distribution:
 ## Verification Checklist
 
 - [x] Install dependencies on Windows x64 (Node 24 LTS, npm 11)
-- [x] Confirm native SDK package loads (v3.5.0 verified in Electron main process)
+- [x] Confirm native SDK package loads (`@smartspectra/node-sdk` v3.5.0 verified in Electron main process)
 - [x] Confirm valid API key authentication against Presage backend
-- [x] Confirm hardware camera enumeration (Discovered `Integrated Webcam`)
+- [x] Confirm hardware camera enumeration (Observed `Integrated Webcam` DirectShow discovery)
 - [x] Confirm camera start and hardware stream acquisition
 - [x] Confirm actual `metrics` and protobuf decoding
-- [x] Confirm chest and abdominal trace values (verified on hardware)
+- [x] Confirm chest and abdominal trace values (observed in local development session)
 - [x] Confirm real-time dual-trace oscilloscope waveform graph
 - [x] Confirm sample freshness detection and stale-signal handling
 - [x] Confirm telemetry setting in SDK (`enableTelemetry: false`)
 - [x] Confirm graceful asynchronous application shutdown and camera device release on standard exit
-- [x] Automated CI workflow and unit tests configured
+- [x] Automated Windows CI workflow and unit tests configured (passing in GitHub Actions)
 
 ## Official References
 

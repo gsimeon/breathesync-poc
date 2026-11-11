@@ -265,7 +265,61 @@ test('SessionLifecycleCoordinator: repeated shutdown calls while teardown is pen
   assert.equal(coordinator.isShutdownComplete(), true);
 });
 
-test('SessionLifecycleCoordinator: failed camera acquisition does not permit a second SDK instance before cleanup settles', async () => {
+test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK start until settled', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+  const teardownDeferred = createDeferred();
+  let instancesCreated = 0;
+
+  const failingSdk = {
+    start: async () => {
+      instancesCreated++;
+      throw new Error('Hardware camera failed to initialize');
+    },
+    stopAsync: () => teardownDeferred.promise,
+    destroy: async () => {},
+  };
+
+  // Launch failed startup in background
+  const startPromise = coordinator.start(() => failingSdk);
+
+  // Allow start() to reject and enter startup-failure teardown
+  await new Promise((r) => setTimeout(r, 10));
+
+  // A second start attempt while teardown is pending must be rejected
+  await assert.rejects(
+    async () => {
+      await coordinator.start(() => {
+        instancesCreated++;
+        return failingSdk;
+      });
+    },
+    { message: /Previous session teardown in progress|Cannot start measurement in state/ }
+  );
+
+  // Verify second instance was NOT created
+  assert.equal(instancesCreated, 1);
+
+  // Complete cleanup now
+  teardownDeferred.resolve();
+
+  // First start must reject with the initial error
+  await assert.rejects(startPromise, { message: 'Hardware camera failed to initialize' });
+
+  // State returns to idle once teardown is complete
+  assert.equal(coordinator.getState(), 'idle');
+
+  // Now a subsequent start is permitted
+  const goodSdk = {
+    start: async () => { instancesCreated++; },
+    destroy: async () => {},
+  };
+  await coordinator.start(() => goodSdk);
+  assert.equal(instancesCreated, 2);
+  assert.equal(coordinator.getState(), 'running');
+  await coordinator.stop();
+});
+
+test('SessionLifecycleCoordinator: normal session stop teardown blocks second SDK start until settled', async () => {
   const coordinator = new SessionLifecycleCoordinator();
   const cleanupDeferred = createDeferred();
   let instancesCreated = 0;
