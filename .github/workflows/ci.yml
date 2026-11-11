@@ -32,6 +32,8 @@ jobs:
 
       - name: Build Windows NSIS Installer
         run: npm run package:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify Installer Artifact
         shell: powershell

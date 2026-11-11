@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "node --experimental-strip-types --test test/**/*.test.mjs",
     "test": "npm run typecheck && npm run test:unit",
-    "package:win": "npm run build && electron-builder --win nsis"
+    "package:win": "npm run build && electron-builder --win nsis --publish never"
   },
   "dependencies": {
     "@smartspectra/node-sdk": "^3.4.0",
