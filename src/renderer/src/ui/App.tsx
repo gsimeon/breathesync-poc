@@ -54,10 +54,15 @@ export default function App() {
     refreshCameras();
 
     const offMetrics = window.breatheSync.onMetrics((payload) => {
-      setMetric(payload as Metric);
+      const metricPayload = payload as Metric;
+      setMetric(metricPayload);
       setLastMetricTime(Date.now());
       setIsStale(false);
-      setAcquisitionTimedOut(false);
+      // P1: Only a valid breathing-rate measurement clears acquisition timeout.
+      // Trace-only events (e.g. chest/abdomen position without a computed rate) must NOT clear it.
+      if (metricPayload?.breathingRate != null) {
+        setAcquisitionTimedOut(false);
+      }
     });
 
     const offStatus = window.breatheSync.onStatus((payload: any) => {

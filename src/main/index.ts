@@ -14,16 +14,11 @@ import {
   normalizeCamera,
   getValidationMessage,
   normalizeBreathingMetrics,
+  SessionLifecycleCoordinator,
 } from '../common/telemetry-utils';
 
 let mainWindow: BrowserWindow | null = null;
-let sdk: SmartSpectraSDK | null = null;
-let sessionState: SessionState = 'idle';
-let isShuttingDown = false;
-
-// P0: Coordinate in-flight startup with shutdown and stop
-let activeStartupPromise: Promise<void> | null = null;
-let activeCleanupPromise: Promise<void> | null = null;
+const coordinator = new SessionLifecycleCoordinator();
 
 function send(channel: string, payload: unknown) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -128,53 +123,8 @@ ipcMain.handle('breathesync:cameras', async (event) => {
   }
 });
 
-/**
- * P0: Execute cleanup exactly once and allow all concurrent callers (stop, shutdown, etc.)
- * to await the identical cleanup operation without deadlocks.
- *
- * @param callerIsStartup - set to true when called from inside startupTask failure branch
- *                          so cleanup doesn't deadlock by awaiting activeStartupPromise.
- */
-function cleanupSdk(callerIsStartup = false): Promise<void> {
-  if (activeCleanupPromise) {
-    return activeCleanupPromise;
-  }
-
-  activeCleanupPromise = (async () => {
-    // If called externally (not from startup failure itself), wait for startup to settle first
-    if (activeStartupPromise && !callerIsStartup) {
-      console.log('Awaiting in-flight startup to settle before running cleanup...');
-      try {
-        await activeStartupPromise;
-      } catch {
-        // Startup error will be handled by its own caller
-      }
-      activeStartupPromise = null;
-    }
-
-    const current = sdk;
-    sdk = null;
-
-    if (current) {
-      console.log('Stopping and destroying SmartSpectra session...');
-      try { await current.stopAsync(); } catch (e) { console.warn('SDK stop warning:', e); }
-      try { await current.destroy(); } catch (e) { console.warn('SDK destroy warning:', e); }
-      console.log('SmartSpectra session successfully torn down.');
-    }
-  })().finally(() => {
-    activeCleanupPromise = null;
-  });
-
-  return activeCleanupPromise;
-}
-
 ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
   validateIpcSender(event);
-
-  const transition = transitionSessionState(sessionState, 'start');
-  if (!transition.allowed) {
-    throw new Error(transition.error || 'Cannot start measurement in current state.');
-  }
 
   const apiKey = process.env.SMARTSPECTRA_API_KEY;
   if (!apiKey) {
@@ -192,70 +142,37 @@ ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
     throw new Error('Selected camera ID does not match any detected hardware camera.');
   }
 
-  sessionState = 'starting';
   send('breathesync:status', { kind: 'session', detail: 'Initializing SmartSpectra camera session...' });
 
-  const startupTask = (async () => {
-    try {
+  await coordinator.start(
+    async () => {
       const instance = new SmartSpectraSDK({
         apiKey,
         requestedMetrics: [...breathingMetrics],
         enableTelemetry: false,
       });
 
-      sdk = instance;
       registerSdkEvents(instance);
       instance.useCamera(CameraSelection.byId(cameraId));
-      await instance.start();
-
-      // P0 race check: ensure shutdown or stop did not begin while start was awaiting
-      if (sessionState === 'starting') {
-        sessionState = 'running';
-        send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
-      } else {
-        console.log(`Startup settled but session state was '${sessionState}'; triggering deferred teardown.`);
-        await cleanupSdk(false);
-      }
-    } catch (error) {
-      if (sessionState === 'starting') {
-        sessionState = 'idle';
-      }
-      activeStartupPromise = null; // Clear before calling cleanup so no circular await occurs
-      await cleanupSdk(true);
-      throw error;
-    } finally {
-      activeStartupPromise = null;
+      return instance;
+    },
+    () => {
+      send('breathesync:status', { kind: 'session', detail: 'Measurement started; waiting for valid samples.' });
     }
-  })();
+  );
 
-  activeStartupPromise = startupTask;
-  await startupTask;
   return { started: true };
 });
 
 ipcMain.handle('breathesync:stop', async (event) => {
   validateIpcSender(event);
 
-  if (sessionState === 'idle') {
+  if (coordinator.getState() === 'idle') {
     return { stopped: true };
   }
 
-  const transition = transitionSessionState(sessionState, 'stop');
-  if (!transition.allowed) {
-    throw new Error(transition.error || 'Cannot stop measurement in current state.');
-  }
-
-  sessionState = 'stopping';
   send('breathesync:status', { kind: 'session', detail: 'Stopping measurement and releasing camera...' });
-
-  try {
-    await cleanupSdk(false);
-  } finally {
-    if (!isShuttingDown) {
-      sessionState = 'idle';
-    }
-  }
-
+  await coordinator.stop();
   send('breathesync:status', { kind: 'session', detail: 'Measurement stopped. Camera released.' });
   return { stopped: true };
 });
@@ -279,9 +196,24 @@ async function createWindow() {
 
   // P0 Security: Prevent unexpected external navigation
   mainWindow.webContents.on('will-navigate', (navEvent, url) => {
-    const isLocalDev = !app.isPackaged && (url.startsWith('http://localhost:') || url.startsWith('http://127.0.0.1:'));
-    const isLocalFile = url.startsWith('file://');
-    if (!isLocalDev && !isLocalFile) {
+    let isAllowed = false;
+    if (app.isPackaged) {
+      isAllowed = url === getExpectedPackagedRendererUrl();
+    } else {
+      const devUrl = process.env.ELECTRON_RENDERER_URL;
+      if (devUrl && (devUrl.startsWith('http://localhost:') || devUrl.startsWith('http://127.0.0.1:'))) {
+        try {
+          isAllowed = new URL(url).origin === new URL(devUrl).origin;
+        } catch {
+          isAllowed = false;
+        }
+      }
+      if (!isAllowed) {
+        isAllowed = url === getExpectedPackagedRendererUrl();
+      }
+    }
+
+    if (!isAllowed) {
       console.warn('Blocked unauthorized in-app navigation to:', url);
       navEvent.preventDefault();
     }
@@ -326,17 +258,15 @@ app.whenReady().then(() => {
 
 // P0: Graceful asynchronous shutdown guaranteeing camera and SDK teardown before process exit
 app.on('before-quit', async (event) => {
-  if (isShuttingDown) {
+  if (coordinator.isShutdown()) {
     return; // Teardown completed, proceed with exit
   }
 
   event.preventDefault();
-  isShuttingDown = true;
-  sessionState = 'shutting_down';
   console.log('App quitting: beginning graceful camera and SDK teardown...');
 
   try {
-    await cleanupSdk(false);
+    await coordinator.shutdown();
   } catch (error) {
     console.error('Error during shutdown cleanup:', error);
   } finally {
