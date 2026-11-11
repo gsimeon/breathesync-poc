@@ -1,4 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { WaveformGraph } from './WaveformGraph';
+import {
+  Activity,
+  Camera,
+  ShieldCheck,
+  AlertCircle,
+  Sun,
+  Clock,
+  RefreshCw,
+  Info,
+} from 'lucide-react';
 
 type Metric = {
   breathingRate: number | null;
@@ -11,26 +22,39 @@ type Metric = {
 };
 
 export default function App() {
-  const [cameras, setCameras] = useState<Array<{id:string;label:string}>>([]);
+  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
   const [cameraId, setCameraId] = useState('');
   const [consent, setConsent] = useState(false);
   const [running, setRunning] = useState(false);
   const [metric, setMetric] = useState<Metric | null>(null);
-  const [status, setStatus] = useState('Not started');
+  const [status, setStatus] = useState('System ready');
   const [error, setError] = useState('');
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [showTips, setShowTips] = useState(false);
 
-  useEffect(() => {
+  // Load cameras
+  const refreshCameras = () => {
     window.breatheSync.getCameras()
       .then((items) => {
         setCameras(items);
-        if (items[0]) setCameraId(items[0].id);
+        if (items.length > 0 && !cameraId) {
+          setCameraId(items[0].id);
+        }
       })
       .catch((e) => setError(e.message || 'Camera discovery failed'));
+  };
 
-    const offMetrics = window.breatheSync.onMetrics((payload) => setMetric(payload as Metric));
+  useEffect(() => {
+    refreshCameras();
+
+    const offMetrics = window.breatheSync.onMetrics((payload) => {
+      setMetric(payload as Metric);
+    });
+
     const offStatus = window.breatheSync.onStatus((payload: any) => {
       setStatus(payload.hint || payload.detail || payload.kind || 'Status updated');
     });
+
     const offError = window.breatheSync.onError((payload: any) => {
       setError(payload.message || 'SmartSpectra error');
     });
@@ -42,10 +66,30 @@ export default function App() {
     };
   }, []);
 
-  const confidenceLabel = useMemo(() => {
-    if (metric?.confidence == null) return 'Waiting for a measurement';
-    return metric.stable ? 'Stable measurement' : 'Measurement not yet stable';
-  }, [metric]);
+  // Session elapsed timer
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (running) {
+      setSessionSeconds(0);
+      timer = setInterval(() => {
+        setSessionSeconds((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const formatTimer = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const confidenceState = useMemo(() => {
+    if (!running) return { label: 'Idle', color: 'neutral', icon: '○' };
+    if (metric?.confidence == null) return { label: 'Acquiring signal...', color: 'warning', icon: '◌' };
+    if (metric.stable) return { label: 'Signal Stable (High Confidence)', color: 'success', icon: '●' };
+    return { label: 'Calibrating (Low Confidence)', color: 'warning', icon: '◌' };
+  }, [metric, running]);
 
   async function start() {
     setError('');
@@ -60,7 +104,6 @@ export default function App() {
   }
 
   async function stop() {
-    setError('');
     try {
       await window.breatheSync.stop();
     } catch (e: any) {
@@ -71,74 +114,297 @@ export default function App() {
   }
 
   const waveform = metric?.chestTrace ?? metric?.abdomenTrace ?? 0;
-  const scale = metric?.state === 'valid' ? 1 + Math.max(-0.18, Math.min(0.18, waveform * 0.08)) : 1;
+  const scale = metric?.state === 'valid' ? 1 + Math.max(-0.16, Math.min(0.16, waveform * 0.08)) : 1;
 
   return (
     <main className="shell">
+      {/* Top Bar */}
       <header className="topbar">
-        <div className="brand-mark">B</div>
-        <div><strong>BreatheSync</strong><small>Human sensing experience · Technical POC</small></div>
-        <span className="status-pill">{running ? '● Measuring' : '○ Idle'}</span>
+        <div className="brand-group">
+          <div className="brand-mark">
+            <Activity size={22} strokeWidth={2.6} />
+          </div>
+          <div>
+            <strong>BreatheSync</strong>
+            <small>SmartSpectra Real-Time Physiological Telemetry</small>
+          </div>
+        </div>
+
+        <div className="topbar-right">
+          {running && (
+            <div className="timer-badge">
+              <Clock size={13} />
+              <span>{formatTimer(sessionSeconds)}</span>
+            </div>
+          )}
+          <span className={`status-pill ${running ? 'measuring' : 'idle'}`}>
+            <span className="pill-dot" />
+            {running ? 'Live Measuring' : 'Sensor Idle'}
+          </span>
+        </div>
       </header>
 
+      {/* Intro Section */}
       <section className="intro">
-        <p className="eyebrow">PRESAGE SMARTSPECTRA INTEGRATION</p>
-        <h1>See your breathing<br/><span>in real time.</span></h1>
-        <p className="subcopy">A live-signal proof of concept. Measurements appear only when received from SmartSpectra.</p>
-      </section>
-
-      <section className="grid">
-        <article className="card visual-card">
-          <div className="card-heading"><div><p className="eyebrow">LIVE VISUAL</p><h2>Breathing field</h2></div><span className="live-dot"/></div>
-          <div className="orb-stage">
-            <div className="orb-ring ring-one" />
-            <div className="orb-ring ring-two" />
-            <div className="orb" style={{ transform: `scale(${scale})` }} />
-            <span className="orb-caption">{metric?.state === 'valid' ? 'Signal responding' : 'Waiting for valid signal'}</span>
-          </div>
-          <p className="helper">The visual remains neutral until a valid breathing trace is available.</p>
-        </article>
-
-        <article className="card metrics-card">
-          <p className="eyebrow">SMARTSPECTRA OUTPUT</p>
-          <h2>Live measurements</h2>
-          <div className="metric-block">
-            <span>Breathing rate</span>
-            <strong>{metric?.breathingRate == null ? '—' : metric.breathingRate.toFixed(1)} <small>{metric?.breathingRate == null ? '' : 'br/min'}</small></strong>
-          </div>
-          <div className="metric-block">
-            <span>Confidence</span>
-            <strong>{metric?.confidence == null ? '—' : `${metric.confidence.toFixed(0)}%`}</strong>
-          </div>
-          <div className="quality">{confidenceLabel}</div>
-          <div className="trace-values">
-            <div><span>Chest trace</span><b>{metric?.chestTrace == null ? '—' : metric.chestTrace.toFixed(3)}</b></div>
-            <div><span>Abdominal trace</span><b>{metric?.abdomenTrace == null ? '—' : metric.abdomenTrace.toFixed(3)}</b></div>
-          </div>
-        </article>
-      </section>
-
-      <section className="card setup-card">
-        <div><p className="eyebrow">SESSION CONTROL</p><h2>Camera and consent</h2></div>
-        <label className="field-label" htmlFor="camera">Camera device</label>
-        <select id="camera" value={cameraId} onChange={(e) => setCameraId(e.target.value)} disabled={running}>
-          {cameras.length === 0 && <option value="">No camera detected</option>}
-          {cameras.map((camera) => <option key={camera.id} value={camera.id}>{camera.label}</option>)}
-        </select>
-        <label className="consent">
-          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={running}/>
-          <span>I understand that BreatheSync uses my camera to process breathing signals. This POC does not store raw video or session measurements. It is not a medical device.</span>
-        </label>
-        <div className="actions">
-          {!running
-            ? <button onClick={start} disabled={!consent || !cameraId}>Start measurement</button>
-            : <button className="stop" onClick={stop}>Stop measurement</button>}
-          <span className="status-text">{status}</span>
+        <div className="intro-meta">
+          <span className="eyebrow">PRESAGE SMARTSPECTRA LIVE TELEMETRY</span>
+          <button
+            type="button"
+            className="tips-toggle-btn"
+            onClick={() => setShowTips((prev) => !prev)}
+          >
+            <Info size={14} />
+            <span>{showTips ? 'Hide Camera Tips' : 'Camera & Lighting Tips'}</span>
+          </button>
         </div>
-        {error && <div className="error" role="alert">{error}</div>}
+        <h1>
+          Real-time respiratory sensing<br />
+          <span>powered by computer vision.</span>
+        </h1>
+        <p className="subcopy">
+          Non-contact, camera-based measurement of respiratory kinematics. Every trace
+          and rate metric is processed in volatile memory from live webcam video frames.
+        </p>
+
+        {/* Collapsible Tips Drawer */}
+        {showTips && (
+          <div className="tips-drawer">
+            <div className="tip-item">
+              <Sun size={16} className="tip-icon" />
+              <div>
+                <strong>Adequate Lighting</strong>
+                <p>Ensure your face and chest are evenly lit without strong backlighting or shadows.</p>
+              </div>
+            </div>
+            <div className="tip-item">
+              <Camera size={16} className="tip-icon" />
+              <div>
+                <strong>Camera Framing</strong>
+                <p>Position your webcam roughly 0.5 to 1.0 meters away so your upper torso is in frame.</p>
+              </div>
+            </div>
+            <div className="tip-item">
+              <Activity size={16} className="tip-icon" />
+              <div>
+                <strong>Steady Breathing</strong>
+                <p>Sit comfortably and remain relatively still while the neural model locks onto breathing motion.</p>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
-      <footer>Local proof of concept · No diagnosis or treatment · SmartSpectra telemetry disabled in this configuration</footer>
+      {/* Main Grid: Visuals and Metrics */}
+      <section className="grid">
+        {/* Left Column: Breathing Field Orb & Oscilloscope Waveform */}
+        <div className="visual-column">
+          {/* Breathing Orb Card */}
+          <article className="card visual-card">
+            <div className="card-heading">
+              <div>
+                <p className="eyebrow">RESONANCE FIELD</p>
+                <h2>Thoracic motion</h2>
+              </div>
+              <span className={`live-dot ${running ? 'active' : ''}`} />
+            </div>
+
+            <div className="orb-stage">
+              <div className="orb-ring ring-one" />
+              <div className="orb-ring ring-two" />
+              <div className="orb" style={{ transform: `scale(${scale})` }} />
+              <span className="orb-caption">
+                {metric?.state === 'valid'
+                  ? 'Motion signal tracked'
+                  : running
+                  ? 'Acquiring respiratory motion...'
+                  : 'Sensors standing by'}
+              </span>
+            </div>
+          </article>
+
+          {/* Real-Time Waveform Graph */}
+          <WaveformGraph currentMetric={metric} running={running} />
+        </div>
+
+        {/* Right Column: Measurements & Quality Card */}
+        <div className="metrics-column">
+          <article className="card metrics-card">
+            <div className="metrics-header">
+              <p className="eyebrow">PHYSIOLOGICAL OUTPUT</p>
+              <h2>Live Measurements</h2>
+            </div>
+
+            {/* Breathing Rate Block */}
+            <div className="metric-block rate-block">
+              <div className="metric-label-row">
+                <span className="metric-name">Breathing Rate</span>
+                <span className="reference-tag">Normal resting: 12–20 br/min</span>
+              </div>
+              <div className="metric-value-row">
+                <span className="huge-number">
+                  {metric?.breathingRate == null ? '—' : metric.breathingRate.toFixed(1)}
+                </span>
+                <span className="metric-unit">
+                  {metric?.breathingRate != null ? 'br/min' : ''}
+                </span>
+              </div>
+            </div>
+
+            {/* Confidence Block with Meter */}
+            <div className="metric-block confidence-block">
+              <div className="metric-label-row">
+                <span className="metric-name">Signal Confidence</span>
+                <span className="metric-percent">
+                  {metric?.confidence != null ? `${metric.confidence.toFixed(0)}%` : '—'}
+                </span>
+              </div>
+              <div className="confidence-meter-track">
+                <div
+                  className="confidence-meter-bar"
+                  style={{ width: `${Math.min(100, Math.max(0, metric?.confidence ?? 0))}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Confidence Status Badge */}
+            <div className={`quality-badge ${confidenceState.color}`}>
+              <span className="quality-icon">{confidenceState.icon}</span>
+              <span>{confidenceState.label}</span>
+            </div>
+
+            {/* Trace Telemetry Breakdown */}
+            <div className="trace-telemetry-box">
+              <p className="trace-telemetry-title">Continuous Signal Offsets</p>
+              <div className="trace-row">
+                <div className="trace-chip chest">
+                  <span className="chip-indicator" />
+                  <span className="chip-label">Upper Thorax (Chest)</span>
+                  <span className="chip-value">
+                    {metric?.chestTrace != null ? metric.chestTrace.toFixed(3) : '—'}
+                  </span>
+                </div>
+                <div className="trace-chip abdomen">
+                  <span className="chip-indicator" />
+                  <span className="chip-label">Lower Torax (Abdomen)</span>
+                  <span className="chip-value">
+                    {metric?.abdomenTrace != null ? metric.abdomenTrace.toFixed(3) : '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Camera Engine Status */}
+            <div className="engine-status-box">
+              <div className="status-label-group">
+                <Activity size={14} className="engine-status-icon" />
+                <span className="engine-status-title">Engine Feedback:</span>
+              </div>
+              <p className="engine-status-text">{status}</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      {/* Session Controls Card */}
+      <section className="card setup-card">
+        <div className="setup-header">
+          <p className="eyebrow">DEVICE & SESSION CONTROL</p>
+          <h2>Webcam configuration</h2>
+        </div>
+
+        <div className="setup-controls-row">
+          <div className="camera-picker">
+            <label className="field-label" htmlFor="camera">
+              <Camera size={14} />
+              <span>Video Input Device</span>
+            </label>
+            <div className="select-wrapper">
+              <select
+                id="camera"
+                value={cameraId}
+                onChange={(e) => setCameraId(e.target.value)}
+                disabled={running}
+              >
+                {cameras.length === 0 && <option value="">No camera detected</option>}
+                {cameras.map((camera) => (
+                  <option key={camera.id} value={camera.id}>
+                    {camera.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="refresh-btn"
+                onClick={refreshCameras}
+                disabled={running}
+                title="Refresh camera list"
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div className="consent-box">
+            <label className="consent">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+                disabled={running}
+              />
+              <div className="consent-text">
+                <ShieldCheck size={16} className="consent-icon" />
+                <span>
+                  <strong>Privacy Guard:</strong> BreatheSync processes live video in volatile memory only.
+                  No video or measurements are saved or recorded. Telemetry is disabled.
+                </span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div className="actions-bar">
+          {!running ? (
+            <button
+              type="button"
+              className="start-btn"
+              onClick={start}
+              disabled={!consent || !cameraId}
+            >
+              Start Real-Time Measurement
+            </button>
+          ) : (
+            <button type="button" className="stop-btn" onClick={stop}>
+              Stop & Release Camera
+            </button>
+          )}
+          <span className="status-badge-inline">{status}</span>
+        </div>
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <AlertCircle size={16} className="error-icon" />
+            <div className="error-content">
+              <strong>Measurement Notice</strong>
+              <p>{error}</p>
+            </div>
+            <button
+              type="button"
+              className="error-dismiss-btn"
+              onClick={() => setError('')}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* Footer */}
+      <footer>
+        <p>
+          BreatheSync Technical Proof of Concept · Presage SmartSpectra v3.5 · Not for medical diagnosis or clinical treatment
+        </p>
+      </footer>
     </main>
   );
 }

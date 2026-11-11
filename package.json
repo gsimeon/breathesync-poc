@@ -35,9 +35,9 @@
     "directories": {
       "output": "release"
     },
-    "files": [
-      "out/**/*",
-      "package.json"
+    "asarUnpack": [
+      "**/node_modules/@smartspectra/**",
+      "**/node_modules/koffi/**"
     ],
     "win": {
       "target": [
