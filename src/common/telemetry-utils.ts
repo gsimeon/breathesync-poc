@@ -3,7 +3,7 @@
  * Shared between Electron main, React renderer, and automated unit test suites.
  */
 
-export type SessionState = 'idle' | 'starting' | 'running' | 'stopping' | 'shutting_down';
+export type SessionState = 'idle' | 'starting' | 'running' | 'stopping' | 'shutting_down' | 'degraded';
 
 export type SessionAction = 'start' | 'start_success' | 'start_failed' | 'stop' | 'stop_success' | 'shutdown';
 
@@ -156,6 +156,18 @@ export function transitionSessionState(
     return { nextState: 'shutting_down', allowed: false, error: 'Application is shutting down' };
   }
 
+  // If degraded due to failed camera release, block starts until application restart
+  if (currentState === 'degraded') {
+    if (action === 'shutdown') {
+      return { nextState: 'shutting_down', allowed: true };
+    }
+    return {
+      nextState: 'degraded',
+      allowed: false,
+      error: 'Camera resource could not be released cleanly. Please restart the application.',
+    };
+  }
+
   switch (action) {
     case 'start':
       if (currentState === 'idle') {
@@ -220,6 +232,8 @@ export class SessionLifecycleCoordinator {
   private activeShutdownPromise: Promise<void> | null = null;
   private isShutdownInitiatedState: boolean = false;
   private isShutdownCompleteState: boolean = false;
+  private teardownFailed: boolean = false;
+  private teardownError: Error | null = null;
 
   getState(): SessionState {
     return this.sessionState;
@@ -241,6 +255,22 @@ export class SessionLifecycleCoordinator {
     return this.isShutdownCompleteState;
   }
 
+  wasLastTeardownSuccessful(): boolean {
+    return !this.teardownFailed;
+  }
+
+  getTeardownError(): Error | null {
+    return this.teardownError;
+  }
+
+  resetDegradedState(): void {
+    if (this.sessionState === 'degraded') {
+      this.sessionState = 'idle';
+      this.teardownFailed = false;
+      this.teardownError = null;
+    }
+  }
+
   async cleanup(): Promise<void> {
     if (this.activeCleanupPromise) {
       return this.activeCleanupPromise;
@@ -259,16 +289,44 @@ export class SessionLifecycleCoordinator {
       const current = this.sdk;
       this.sdk = null;
 
+      let stopErr: unknown = null;
+      let destroyErr: unknown = null;
+
       if (current) {
         if (typeof current.stopAsync === 'function') {
-          try { await current.stopAsync(); } catch (e) { console.warn('SDK stop warning:', e); }
+          try {
+            await current.stopAsync();
+          } catch (e) {
+            stopErr = e;
+            console.warn('SDK stop warning:', e);
+          }
         }
         if (typeof current.destroy === 'function') {
-          try { await current.destroy(); } catch (e) { console.warn('SDK destroy warning:', e); }
+          try {
+            await current.destroy();
+          } catch (e) {
+            destroyErr = e;
+            console.warn('SDK destroy warning:', e);
+          }
         }
+      }
+
+      // P1: Check if teardown failed to release camera hardware resources
+      if (destroyErr) {
+        this.teardownFailed = true;
+        this.teardownError = new Error(
+          `Camera release failed: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`
+        );
+        throw this.teardownError;
+      } else {
+        this.teardownFailed = false;
+        this.teardownError = null;
       }
     })().finally(() => {
       this.activeCleanupPromise = null;
+      if (!this.isShutdownInitiatedState) {
+        this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
+      }
     });
 
     return this.activeCleanupPromise;
@@ -281,6 +339,10 @@ export class SessionLifecycleCoordinator {
     // Guard against re-entry while previous session cleanup is still finalizing
     if (this.activeCleanupPromise) {
       throw new Error('Previous session teardown in progress. Please wait before starting.');
+    }
+
+    if (this.sessionState === 'degraded' || this.teardownFailed) {
+      throw new Error('Camera resource could not be released cleanly. Please restart the application.');
     }
 
     const transition = transitionSessionState(this.sessionState, 'start');
@@ -313,16 +375,38 @@ export class SessionLifecycleCoordinator {
             this.sdk = null;
             const failedInstance = instance;
             this.activeCleanupPromise = (async () => {
+              let stopErr: unknown = null;
+              let destroyErr: unknown = null;
               if (typeof failedInstance.stopAsync === 'function') {
-                try { await failedInstance.stopAsync(); } catch (e) { console.warn('SDK stop error on startup failure:', e); }
+                try {
+                  await failedInstance.stopAsync();
+                } catch (e) {
+                  stopErr = e;
+                  console.warn('SDK stop error on startup failure:', e);
+                }
               }
               if (typeof failedInstance.destroy === 'function') {
-                try { await failedInstance.destroy(); } catch (e) { console.warn('SDK destroy error on startup failure:', e); }
+                try {
+                  await failedInstance.destroy();
+                } catch (e) {
+                  destroyErr = e;
+                  console.warn('SDK destroy error on startup failure:', e);
+                }
+              }
+
+              if (destroyErr) {
+                this.teardownFailed = true;
+                this.teardownError = new Error(
+                  `Camera release failed on startup: ${destroyErr instanceof Error ? destroyErr.message : String(destroyErr)}`
+                );
+              } else {
+                this.teardownFailed = false;
+                this.teardownError = null;
               }
             })().finally(() => {
               this.activeCleanupPromise = null;
               if (this.sessionState === 'starting') {
-                this.sessionState = 'idle';
+                this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
               }
             });
             await this.activeCleanupPromise;
@@ -360,7 +444,7 @@ export class SessionLifecycleCoordinator {
       await this.cleanup();
     } finally {
       if (!this.isShutdownInitiatedState) {
-        this.sessionState = 'idle';
+        this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
       }
     }
   }

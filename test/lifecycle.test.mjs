@@ -265,8 +265,9 @@ test('SessionLifecycleCoordinator: repeated shutdown calls while teardown is pen
   assert.equal(coordinator.isShutdownComplete(), true);
 });
 
-test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK start until settled', async () => {
+test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK start until settled (deterministic)', async () => {
   const coordinator = new SessionLifecycleCoordinator();
+  const teardownStarted = createDeferred();
   const teardownDeferred = createDeferred();
   let instancesCreated = 0;
 
@@ -275,15 +276,18 @@ test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK st
       instancesCreated++;
       throw new Error('Hardware camera failed to initialize');
     },
-    stopAsync: () => teardownDeferred.promise,
+    stopAsync: () => {
+      teardownStarted.resolve(); // Deterministic signal that teardown has begun
+      return teardownDeferred.promise;
+    },
     destroy: async () => {},
   };
 
   // Launch failed startup in background
   const startPromise = coordinator.start(() => failingSdk);
 
-  // Allow start() to reject and enter startup-failure teardown
-  await new Promise((r) => setTimeout(r, 10));
+  // Deterministically await teardown entry without arbitrary timers
+  await teardownStarted.promise;
 
   // A second start attempt while teardown is pending must be rejected
   await assert.rejects(
@@ -307,6 +311,7 @@ test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK st
 
   // State returns to idle once teardown is complete
   assert.equal(coordinator.getState(), 'idle');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), true);
 
   // Now a subsequent start is permitted
   const goodSdk = {
@@ -319,15 +324,19 @@ test('SessionLifecycleCoordinator: startup failure teardown blocks second SDK st
   await coordinator.stop();
 });
 
-test('SessionLifecycleCoordinator: normal session stop teardown blocks second SDK start until settled', async () => {
+test('SessionLifecycleCoordinator: normal session stop teardown blocks second SDK start until settled (deterministic)', async () => {
   const coordinator = new SessionLifecycleCoordinator();
+  const teardownStarted = createDeferred();
   const cleanupDeferred = createDeferred();
   let instancesCreated = 0;
 
   const mockSdk = {
     start: async () => {},
-    stopAsync: async () => {},
-    destroy: () => cleanupDeferred.promise,
+    stopAsync: () => {
+      teardownStarted.resolve(); // Deterministic signal that stop cleanup has begun
+      return cleanupDeferred.promise;
+    },
+    destroy: () => {},
   };
 
   await coordinator.start(() => {
@@ -337,6 +346,9 @@ test('SessionLifecycleCoordinator: normal session stop teardown blocks second SD
 
   // Begin stop (cleanup will pause on deferred promise)
   const stopPromise = coordinator.stop();
+
+  // Deterministically await stop cleanup entry
+  await teardownStarted.promise;
 
   // Attempting to start a second instance while cleanup is in flight must be rejected
   await assert.rejects(
@@ -356,6 +368,84 @@ test('SessionLifecycleCoordinator: normal session stop teardown blocks second SD
   await stopPromise;
 
   assert.equal(coordinator.getState(), 'idle');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), true);
+});
+
+test('SessionLifecycleCoordinator: total teardown failure (destroy rejects) marks state degraded and rejects future start', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+
+  const brokenSdk = {
+    start: async () => {},
+    stopAsync: async () => {
+      throw new Error('Kernel driver crashed during camera stop');
+    },
+    destroy: async () => {
+      throw new Error('Failed to unbind camera DirectShow graph');
+    },
+  };
+
+  await coordinator.start(() => brokenSdk);
+  assert.equal(coordinator.getState(), 'running');
+
+  // stop() must reject because teardown failed to release camera
+  await assert.rejects(
+    async () => {
+      await coordinator.stop();
+    },
+    { message: /Camera release failed/ }
+  );
+
+  // Coordinator must NOT declare idle or report success
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getState(), 'degraded');
+
+  // Any subsequent start must be blocked to prevent conflicting access to an unreleased camera
+  await assert.rejects(
+    async () => {
+      await coordinator.start(() => ({
+        start: async () => {},
+        destroy: async () => {},
+      }));
+    },
+    { message: /Camera resource could not be released cleanly/ }
+  );
+});
+
+test('SessionLifecycleCoordinator: startup failure with total teardown failure marks state degraded and prevents re-entry', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+
+  const brokenStartupSdk = {
+    start: async () => {
+      throw new Error('Camera failed to start');
+    },
+    stopAsync: async () => {
+      throw new Error('Driver failed to stop');
+    },
+    destroy: async () => {
+      throw new Error('Hardware handle locked');
+    },
+  };
+
+  await assert.rejects(
+    async () => {
+      await coordinator.start(() => brokenStartupSdk);
+    },
+    { message: 'Camera failed to start' }
+  );
+
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+  assert.equal(coordinator.getState(), 'degraded');
+
+  // Second start is blocked
+  await assert.rejects(
+    async () => {
+      await coordinator.start(() => ({
+        start: async () => {},
+        destroy: async () => {},
+      }));
+    },
+    { message: /Camera resource could not be released cleanly/ }
+  );
 });
 
 test('SessionLifecycleCoordinator: startup rejection during pending stop is handled cleanly', async () => {

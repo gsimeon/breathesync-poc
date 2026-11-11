@@ -172,9 +172,24 @@ ipcMain.handle('breathesync:stop', async (event) => {
   }
 
   send('breathesync:status', { kind: 'session', detail: 'Stopping measurement and releasing camera...' });
-  await coordinator.stop();
-  send('breathesync:status', { kind: 'session', detail: 'Measurement stopped. Camera released.' });
-  return { stopped: true };
+  try {
+    await coordinator.stop();
+    send('breathesync:status', { kind: 'session', detail: 'Measurement stopped. Camera released.' });
+    return { stopped: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Teardown failure';
+    send('breathesync:status', {
+      kind: 'session',
+      detail: 'Measurement stopped, but camera hardware release could not be confirmed.',
+      error: message,
+    });
+    send('breathesync:error', {
+      code: 'TEARDOWN_FAILED',
+      message: `Camera resource could not be cleanly released: ${message}`,
+      retryable: false,
+    });
+    throw error;
+  }
 });
 
 async function createWindow() {
