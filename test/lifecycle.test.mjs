@@ -719,6 +719,10 @@ test('SessionLifecycleCoordinator: onStateChange emits broadcasts on start, stop
   assert.ok(states.includes('stopping'), 'should emit stopping');
   assert.ok(states.includes('idle'), 'should emit idle upon cleanup settlement');
 
+  // Verify that the stopping event correctly has isCleanupPending: true
+  const stoppingEvent = stateEvents.find((e) => e.state === 'stopping');
+  assert.equal(stoppingEvent.isCleanupPending, true, 'stopping event must have isCleanupPending: true');
+
   // The last event must be settled cleanup
   const finalEvent = stateEvents[stateEvents.length - 1];
   assert.equal(finalEvent.state, 'idle');

@@ -556,10 +556,11 @@ export class SessionLifecycleCoordinator {
     }
 
     this.sessionState = 'stopping';
+    const cleanupPromise = this.cleanup();
     this.notifyStateChange();
 
     try {
-      await this.cleanup();
+      await cleanupPromise;
     } finally {
       if (!this.isShutdownInitiatedState) {
         this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
@@ -693,7 +694,7 @@ export class RendererSessionSyncCoordinator {
   handleStateSnapshot(res: RendererSyncSnapshot | null | undefined): void {
     if (!res) return;
 
-    if (res.isCleanupPending) {
+    if (res.isCleanupPending || res.state === 'stopping') {
       this.isStoppingState = true;
       this.actions.setIsStopping(true);
       this.actions.setStatus('Camera finalizing release; standing by...');

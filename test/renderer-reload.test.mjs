@@ -138,3 +138,43 @@ test('Renderer reload regression: interface becomes usable again after successfu
   const canStart = !isStoppingVal && !runningVal && !fatalErrorVal;
   assert.equal(canStart, true, 'Start button must be fully interactive after cleanup finishes');
 });
+
+test('Renderer reload regression: intermediate stopping event with isCleanupPending: false preserves stopping indicator until settled idle', () => {
+  let isStoppingVal = false;
+  let runningVal = true;
+  let statusVal = '';
+  let fatalErrorVal = null;
+
+  const coordinator = new RendererSessionSyncCoordinator({
+    setIsStopping: (v) => { isStoppingVal = v; },
+    setRunning: (v) => { runningVal = v; },
+    setStatus: (v) => { statusVal = v; },
+    setFatalSessionError: (v) => { fatalErrorVal = v; },
+  });
+
+  // Intermediate event: state is 'stopping', but isCleanupPending is false
+  coordinator.handleSessionStateEvent({
+    state: 'stopping',
+    isCleanupPending: false,
+    wasLastTeardownSuccessful: true,
+    teardownError: null,
+  });
+
+  assert.equal(isStoppingVal, true, 'isStopping must remain true when state is stopping even if isCleanupPending is false');
+  assert.equal(coordinator.isStopping(), true);
+  assert.equal(statusVal, 'Camera finalizing release; standing by...');
+
+  // Event when teardown genuinely settles
+  coordinator.handleSessionStateEvent({
+    state: 'idle',
+    isCleanupPending: false,
+    wasLastTeardownSuccessful: true,
+    teardownError: null,
+  });
+
+  assert.equal(isStoppingVal, false, 'isStopping must clear only after cleanup settles to idle');
+  assert.equal(coordinator.isStopping(), false);
+  assert.equal(statusVal, 'System standing by');
+});
+
+
