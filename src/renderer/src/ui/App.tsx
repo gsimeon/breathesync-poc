@@ -185,9 +185,9 @@ export default function App() {
     return { label: 'Calibrating (Low Confidence)', color: 'warning', icon: '◌' };
   }, [metric, running, isStale, acquisitionTimedOut]);
 
-  async function start() {
+  async function start(): Promise<boolean> {
     if (fatalSessionError || fatalSessionErrorRef.current) {
-      return;
+      return false;
     }
 
     if (restartTimerRef.current) {
@@ -204,6 +204,7 @@ export default function App() {
     try {
       await window.breatheSync.start(cameraId);
       setRunning(true);
+      return true;
     } catch (e: any) {
       const msg = e?.message || 'Unable to start measurement';
       setError(msg);
@@ -217,12 +218,14 @@ export default function App() {
           restartTimerRef.current = null;
         }
       }
+      return false;
     }
   }
 
-  async function stop() {
+  async function stop(): Promise<boolean> {
     try {
       await window.breatheSync.stop();
+      return true;
     } catch (e: any) {
       const msg = e?.message || 'Unable to stop cleanly';
       setError(msg);
@@ -235,6 +238,7 @@ export default function App() {
           restartTimerRef.current = null;
         }
       }
+      return false;
     } finally {
       setRunning(false);
       setMetric(null);
@@ -254,14 +258,9 @@ export default function App() {
       restartTimerRef.current = null;
     }
 
-    try {
-      await stop();
-    } catch {
-      // stop() catches and handles fatal teardown state updates
-    }
-
-    // Abort restart if teardown failed during stop or a fatal error arrived
-    if (fatalSessionErrorRef.current) {
+    // P1: Only proceed to schedule restart if the backend confirms successful stopping
+    const stoppedSuccessfully = await stop();
+    if (!stoppedSuccessfully || fatalSessionErrorRef.current) {
       return;
     }
 
