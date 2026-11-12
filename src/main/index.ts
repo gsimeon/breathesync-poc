@@ -13,6 +13,8 @@ import {
   transitionSessionState,
   normalizeCamera,
   getValidationMessage,
+  getProcessingStatusMessage,
+  getFriendlyErrorMessage,
   normalizeBreathingMetrics,
   SessionLifecycleCoordinator,
   ERROR_CODE_TEARDOWN_FAILED,
@@ -34,7 +36,9 @@ coordinator.onStateChange((statePayload) => {
 
 function registerSdkEvents(instance: SmartSpectraSDK) {
   instance.on('processingStatus', (status: unknown) => {
-    send('breathesync:status', { kind: 'processing', detail: String(status) });
+    const numStatus = Number(status);
+    const friendlyDetail = getProcessingStatusMessage(numStatus);
+    send('breathesync:status', { kind: 'processing', code: numStatus, detail: friendlyDetail, hint: friendlyDetail });
   });
 
   instance.on('validationStatus', (code: unknown, timestamp: unknown, hint: unknown) => {
@@ -63,9 +67,10 @@ function registerSdkEvents(instance: SmartSpectraSDK) {
   });
 
   instance.on('error', (code: unknown, message: unknown, retryable: unknown) => {
+    const friendlyMsg = getFriendlyErrorMessage(code, message);
     send('breathesync:error', {
       code: String(code),
-      message: String(message),
+      message: friendlyMsg,
       retryable: Boolean(retryable),
     });
   });

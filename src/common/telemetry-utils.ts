@@ -158,6 +158,43 @@ export function getValidationMessage(code: number, hint?: string | null): string
   return VALIDATION_MESSAGES[code] || `Validation code: ${code}`;
 }
 
+/** Map SDK processingStatus integer codes to human-friendly feedback messages. */
+export function getProcessingStatusMessage(status: number): string {
+  switch (status) {
+    case 0:
+      return 'Engine uninitialized';
+    case 1:
+      return 'Sensors idle';
+    case 2:
+      return 'Initializing optical inference pipeline...';
+    case 3:
+      return 'Tracking thoracic movement';
+    case 4:
+      return 'Stopping processing pipeline...';
+    case 5:
+      return 'Optical processing paused (license verification timed out)';
+    default:
+      return `Processing status: ${status}`;
+  }
+}
+
+/** Map SDK error codes and messages to clear, actionable user explanations. */
+export function getFriendlyErrorMessage(code: unknown, message: unknown): string {
+  const codeNum = Number(code);
+  const msgStr = typeof message === 'string' ? message : String(message || '');
+
+  if (codeNum === 5 || msgStr.toLowerCase().includes('network error')) {
+    return 'Presage cloud licensing handshake timed out (connection latency exceeded 3s). Please check your internet connection or hotspot stability and retry.';
+  }
+  if (codeNum === 2 || msgStr.toLowerCase().includes('auth')) {
+    return 'Presage API key authorization failed. Please verify your SMARTSPECTRA_API_KEY in .env.';
+  }
+  if (codeNum === 4 || msgStr.toLowerCase().includes('credit')) {
+    return 'Presage API key usage credit exhausted. Please contact Presage support or check your account.';
+  }
+  return msgStr || 'A SmartSpectra processing error occurred.';
+}
+
 /** Process and normalize decoded protobuf breathing metrics. */
 export function normalizeBreathingMetrics(
   decoded: DecodedBreathingData,

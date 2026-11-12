@@ -10,6 +10,8 @@ import {
   isSampleFresh,
   normalizeCamera,
   getValidationMessage,
+  getProcessingStatusMessage,
+  getFriendlyErrorMessage,
   normalizeBreathingMetrics,
   transitionSessionState,
 } from '../src/common/telemetry-utils.ts';
@@ -69,6 +71,43 @@ test('getValidationMessage maps SDK codes and hints', () => {
 
   // Unknown codes fall back gracefully
   assert.equal(getValidationMessage(999), 'Validation code: 999');
+});
+
+test('getProcessingStatusMessage maps integer codes to human-friendly feedback', () => {
+  assert.equal(getProcessingStatusMessage(0), 'Engine uninitialized');
+  assert.equal(getProcessingStatusMessage(1), 'Sensors idle');
+  assert.equal(getProcessingStatusMessage(2), 'Initializing optical inference pipeline...');
+  assert.equal(getProcessingStatusMessage(3), 'Tracking thoracic movement');
+  assert.equal(getProcessingStatusMessage(4), 'Stopping processing pipeline...');
+  assert.equal(getProcessingStatusMessage(5), 'Optical processing paused (license verification timed out)');
+  assert.equal(getProcessingStatusMessage(99), 'Processing status: 99');
+});
+
+test('getFriendlyErrorMessage clarifies network authorization timeouts and licensing errors', () => {
+  // Code 5 (Network Error / License Timeout)
+  assert.match(
+    getFriendlyErrorMessage(5, 'A network error occurred during SmartSpectra processing.'),
+    /Presage cloud licensing handshake timed out/
+  );
+  assert.match(
+    getFriendlyErrorMessage('5', 'Network error'),
+    /Presage cloud licensing handshake timed out/
+  );
+
+  // Authentication error
+  assert.match(
+    getFriendlyErrorMessage(2, 'Auth failed'),
+    /Presage API key authorization failed/
+  );
+
+  // Credit exhausted
+  assert.match(
+    getFriendlyErrorMessage(4, 'Credit exhausted'),
+    /usage credit exhausted/
+  );
+
+  // Fallback
+  assert.equal(getFriendlyErrorMessage(99, 'General internal error'), 'General internal error');
 });
 
 test('normalizeBreathingMetrics decodes protobuf structure cleanly', () => {
