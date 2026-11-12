@@ -15,6 +15,12 @@ declare global {
       onMetrics: (listener: (payload: any) => void) => () => void;
       onStatus: (listener: (payload: any) => void) => () => void;
       onError: (listener: (payload: any) => void) => () => void;
+      onSessionState?: (listener: (payload: {
+        state: string;
+        isCleanupPending: boolean;
+        wasLastTeardownSuccessful: boolean;
+        teardownError: string | null;
+      }) => void) => () => void;
     };
   }
 }

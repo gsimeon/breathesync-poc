@@ -264,6 +264,13 @@ export interface SessionLifecycleOptions {
   teardownTimeoutMs?: number;
 }
 
+export interface SessionLifecycleStatePayload {
+  state: SessionState;
+  isCleanupPending: boolean;
+  wasLastTeardownSuccessful: boolean;
+  teardownError: string | null;
+}
+
 export function withTimeout<T>(promise: Promise<T> | void, timeoutMs: number, label: string): Promise<T | void> {
   if (!promise || typeof (promise as any).then !== 'function') {
     return Promise.resolve(promise);
@@ -296,9 +303,31 @@ export class SessionLifecycleCoordinator {
   private teardownFailed: boolean = false;
   private teardownError: Error | null = null;
   private teardownTimeoutMs: number;
+  private stateListeners: Set<(payload: SessionLifecycleStatePayload) => void> = new Set();
 
   constructor(options?: SessionLifecycleOptions) {
     this.teardownTimeoutMs = options?.teardownTimeoutMs ?? 5000;
+  }
+
+  onStateChange(listener: (payload: SessionLifecycleStatePayload) => void): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  notifyStateChange(): void {
+    const payload: SessionLifecycleStatePayload = {
+      state: this.sessionState,
+      isCleanupPending: this.isCleanupPending(),
+      wasLastTeardownSuccessful: this.wasLastTeardownSuccessful(),
+      teardownError: this.teardownError?.message || null,
+    };
+    for (const listener of this.stateListeners) {
+      try {
+        listener(payload);
+      } catch (e) {
+        console.warn('Error in coordinator state listener:', e);
+      }
+    }
   }
 
   getState(): SessionState {
@@ -400,6 +429,7 @@ export class SessionLifecycleCoordinator {
       if (!this.isShutdownInitiatedState) {
         this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
       }
+      this.notifyStateChange();
     });
 
     return this.activeCleanupPromise;
@@ -426,6 +456,7 @@ export class SessionLifecycleCoordinator {
     }
 
     this.sessionState = 'starting';
+    this.notifyStateChange();
 
     const startupTask = (async () => {
       let instance: ManagedSdkInstance | null = null;
@@ -436,6 +467,7 @@ export class SessionLifecycleCoordinator {
 
         if (this.sessionState === 'starting') {
           this.sessionState = 'running';
+          this.notifyStateChange();
           if (onStarted) onStarted();
         } else {
           // Stop or shutdown was requested while startup was in-flight.
@@ -487,10 +519,12 @@ export class SessionLifecycleCoordinator {
               if (this.sessionState === 'starting') {
                 this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
               }
+              this.notifyStateChange();
             });
             await this.activeCleanupPromise;
           } else {
             this.sessionState = 'idle';
+            this.notifyStateChange();
           }
         }
         // Preserve startup error and attach teardownError if teardown failed
@@ -522,6 +556,7 @@ export class SessionLifecycleCoordinator {
     }
 
     this.sessionState = 'stopping';
+    this.notifyStateChange();
 
     try {
       await this.cleanup();
@@ -529,6 +564,7 @@ export class SessionLifecycleCoordinator {
       if (!this.isShutdownInitiatedState) {
         this.sessionState = this.teardownFailed ? 'degraded' : 'idle';
       }
+      this.notifyStateChange();
     }
   }
 
@@ -539,12 +575,14 @@ export class SessionLifecycleCoordinator {
 
     this.isShutdownInitiatedState = true;
     this.sessionState = 'shutting_down';
+    this.notifyStateChange();
 
     this.activeShutdownPromise = (async () => {
       try {
         await this.cleanup();
       } finally {
         this.isShutdownCompleteState = true;
+        this.notifyStateChange();
       }
     })();
 
@@ -616,6 +654,88 @@ export class SensorRestartCoordinator {
     }, this.delayMs);
 
     return true;
+  }
+}
+
+export interface RendererSyncSnapshot {
+  state: string;
+  isCleanupPending: boolean;
+  wasLastTeardownSuccessful: boolean;
+  teardownError?: string | null;
+}
+
+export interface RendererSyncActions {
+  setIsStopping: (isStopping: boolean) => void;
+  setRunning: (running: boolean) => void;
+  setStatus: (status: string) => void;
+  setFatalSessionError: (error: string | null) => void;
+  cancelPendingRestart?: () => void;
+}
+
+/**
+ * P1 Reliability: Coordinates session state synchronization for the renderer.
+ * Handles initial snapshots from getState() on window mount/reload as well as
+ * real-time onSessionState() broadcast updates from the main process.
+ * Guarantees that reload while cleanup is pending clears isStopping when cleanup finishes,
+ * transitions to persistent fatal error if cleanup fails, and restores full interactive
+ * usability upon clean teardown.
+ */
+export class RendererSessionSyncCoordinator {
+  private isStoppingState: boolean = false;
+  private runningState: boolean = false;
+  private fatalError: string | null = null;
+  private actions: RendererSyncActions;
+
+  constructor(actions: RendererSyncActions) {
+    this.actions = actions;
+  }
+
+  handleStateSnapshot(res: RendererSyncSnapshot | null | undefined): void {
+    if (!res) return;
+
+    if (res.isCleanupPending) {
+      this.isStoppingState = true;
+      this.actions.setIsStopping(true);
+      this.actions.setStatus('Camera finalizing release; standing by...');
+      return;
+    }
+
+    // Cleanup is settled
+    this.isStoppingState = false;
+    this.actions.setIsStopping(false);
+
+    if (res.state === 'running') {
+      this.runningState = true;
+      this.actions.setRunning(true);
+      this.actions.setStatus('Live Measuring (session active)');
+    } else if (res.state === 'degraded' || !res.wasLastTeardownSuccessful) {
+      this.runningState = false;
+      const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
+      this.fatalError = fatalMsg;
+      this.actions.setRunning(false);
+      this.actions.setFatalSessionError(fatalMsg);
+      this.actions.cancelPendingRestart?.();
+    } else if (res.state === 'idle') {
+      this.runningState = false;
+      this.actions.setRunning(false);
+      this.actions.setStatus('System standing by');
+    }
+  }
+
+  handleSessionStateEvent(res: RendererSyncSnapshot | null | undefined): void {
+    this.handleStateSnapshot(res);
+  }
+
+  isStopping(): boolean {
+    return this.isStoppingState;
+  }
+
+  isRunning(): boolean {
+    return this.runningState;
+  }
+
+  getFatalError(): string | null {
+    return this.fatalError;
   }
 }
 

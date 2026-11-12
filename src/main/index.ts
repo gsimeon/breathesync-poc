@@ -28,6 +28,10 @@ function send(channel: string, payload: unknown) {
   }
 }
 
+coordinator.onStateChange((statePayload) => {
+  send('breathesync:session-state', statePayload);
+});
+
 function registerSdkEvents(instance: SmartSpectraSDK) {
   instance.on('processingStatus', (status: unknown) => {
     send('breathesync:status', { kind: 'processing', detail: String(status) });
@@ -269,11 +273,12 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
-  // P0 Reliability: Auto-stop active camera session if renderer window reloads or navigates
-  mainWindow.webContents.on('did-start-navigation', async (_event, _url, _isInPlace, isMainFrame) => {
-    if (isMainFrame && coordinator.getState() !== 'idle' && coordinator.getState() !== 'degraded') {
+  // P0 Reliability: Auto-stop active camera session if renderer window reloads or navigates genuinely.
+  // P2: Ignore same-document / in-place navigations (such as hash changes or pushState) via isInPlace flag.
+  mainWindow.webContents.on('did-start-navigation', async (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && coordinator.getState() !== 'idle' && coordinator.getState() !== 'degraded') {
       try {
-        console.log('Renderer navigation/reload detected; releasing active camera session...');
+        console.log('Genuine cross-document navigation/reload detected; releasing active camera session...');
         await coordinator.stop();
       } catch (err) {
         console.warn('Auto-stopped session on renderer reload/navigation:', err);

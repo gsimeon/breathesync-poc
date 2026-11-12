@@ -17,6 +17,7 @@ import {
   isTeardownError,
   ERROR_CODE_TEARDOWN_FAILED,
   SensorRestartCoordinator,
+  RendererSessionSyncCoordinator,
 } from '../../../common/telemetry-utils';
 
 type Metric = {
@@ -49,6 +50,7 @@ export default function App() {
   // P1: SensorRestartCoordinator and fatal state refs to prevent invalid restarts
   const restartCoordinatorRef = useRef<SensorRestartCoordinator | null>(null);
   const fatalSessionErrorRef = useRef<string | null>(null);
+  const syncCoordinatorRef = useRef<RendererSessionSyncCoordinator | null>(null);
 
   if (!restartCoordinatorRef.current) {
     restartCoordinatorRef.current = new SensorRestartCoordinator({
@@ -56,6 +58,19 @@ export default function App() {
       start: () => start(),
       getFatalError: () => fatalSessionErrorRef.current,
       delayMs: 400,
+    });
+  }
+
+  if (!syncCoordinatorRef.current) {
+    syncCoordinatorRef.current = new RendererSessionSyncCoordinator({
+      setIsStopping,
+      setRunning,
+      setStatus,
+      setFatalSessionError: (msg) => {
+        setFatalSessionError(msg);
+        fatalSessionErrorRef.current = msg;
+      },
+      cancelPendingRestart: () => restartCoordinatorRef.current?.cancelPendingRestart(),
     });
   }
 
@@ -91,18 +106,12 @@ export default function App() {
 
     // Synchronize initial state with main process on mount / reload
     window.breatheSync.getState?.().then((res: any) => {
-      if (res?.state === 'running') {
-        setRunning(true);
-        setStatus('Live Measuring (session active)');
-      } else if (res?.isCleanupPending) {
-        setIsStopping(true);
-        setStatus('Camera finalizing release; standing by...');
-      } else if (res?.state === 'degraded' || !res?.wasLastTeardownSuccessful) {
-        const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
-        setFatalSessionError(fatalMsg);
-        fatalSessionErrorRef.current = fatalMsg;
-      }
+      syncCoordinatorRef.current?.handleStateSnapshot(res);
     }).catch(() => {});
+
+    const offSessionState = window.breatheSync.onSessionState?.((res: any) => {
+      syncCoordinatorRef.current?.handleSessionStateEvent(res);
+    });
 
     const offMetrics = window.breatheSync.onMetrics((payload) => {
       const metricPayload = payload as Metric;
@@ -136,6 +145,7 @@ export default function App() {
       offMetrics();
       offStatus();
       offError();
+      offSessionState?.();
     };
   }, []);
 

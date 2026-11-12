@@ -16,4 +16,5 @@ contextBridge.exposeInMainWorld('breatheSync', {
   onMetrics: (listener: Listener<unknown>) => subscribe('breathesync:metrics', listener),
   onStatus: (listener: Listener<unknown>) => subscribe('breathesync:status', listener),
   onError: (listener: Listener<unknown>) => subscribe('breathesync:error', listener),
+  onSessionState: (listener: Listener<unknown>) => subscribe('breathesync:session-state', listener),
 });

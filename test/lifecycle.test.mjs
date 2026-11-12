@@ -691,3 +691,37 @@ test('SessionLifecycleCoordinator: hanging stopAsync triggers teardown timeout a
   assert.equal(coordinator.getState(), 'degraded');
   assert.equal(coordinator.wasLastTeardownSuccessful(), false);
 });
+
+test('SessionLifecycleCoordinator: onStateChange emits broadcasts on start, stop, and cleanup completion', async () => {
+  const coordinator = new SessionLifecycleCoordinator();
+  const stateEvents = [];
+
+  coordinator.onStateChange((payload) => {
+    stateEvents.push({ ...payload });
+  });
+
+  const mockSdk = {
+    start: async () => {},
+    stopAsync: async () => {},
+    destroy: async () => {},
+  };
+
+  await coordinator.start(() => mockSdk);
+  assert.equal(coordinator.getState(), 'running');
+
+  await coordinator.stop();
+  assert.equal(coordinator.getState(), 'idle');
+
+  // Verify state transitions were emitted
+  const states = stateEvents.map((e) => e.state);
+  assert.ok(states.includes('starting'), 'should emit starting');
+  assert.ok(states.includes('running'), 'should emit running');
+  assert.ok(states.includes('stopping'), 'should emit stopping');
+  assert.ok(states.includes('idle'), 'should emit idle upon cleanup settlement');
+
+  // The last event must be settled cleanup
+  const finalEvent = stateEvents[stateEvents.length - 1];
+  assert.equal(finalEvent.state, 'idle');
+  assert.equal(finalEvent.isCleanupPending, false);
+  assert.equal(finalEvent.wasLastTeardownSuccessful, true);
+});
