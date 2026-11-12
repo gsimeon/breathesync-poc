@@ -300,6 +300,8 @@ export default function App() {
     ? 1 + Math.max(-0.16, Math.min(0.16, waveform * 0.08))
     : 1;
 
+  const isElectron = typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent);
+
   return (
     <main className="shell">
       {/* Top Bar */}
@@ -331,6 +333,27 @@ export default function App() {
           </span>
         </div>
       </header>
+
+      {/* Web Preview Banner (Displayed when viewed in browser outside Electron) */}
+      {!isElectron && (
+        <aside className="web-demo-banner" role="banner">
+          <div className="web-demo-content">
+            <span className="web-badge">WEB PREVIEW</span>
+            <span>
+              <strong>BreatheSync Demonstration Mode:</strong> You are viewing the browser preview.
+              For local real-time inference with Presage SmartSpectra C++ on physical webcam hardware, install the Windows app.
+            </span>
+          </div>
+          <a
+            href="https://github.com/gsimeon/breathesync-poc/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="download-installer-btn"
+          >
+            Download Windows Installer (.exe)
+          </a>
+        </aside>
+      )}
 
       {/* Intro Section */}
       <section className="intro">

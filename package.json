@@ -8,6 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "build:web": "vite build",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --experimental-strip-types --test test/**/*.test.mjs",
     "test": "npm run typecheck && npm run test:unit",
