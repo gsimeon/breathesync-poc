@@ -16,6 +16,7 @@ import {
   hasBreathingRate,
   isTeardownError,
   ERROR_CODE_TEARDOWN_FAILED,
+  SensorRestartCoordinator,
 } from '../../../common/telemetry-utils';
 
 type Metric = {
@@ -44,26 +45,31 @@ export default function App() {
   const [acquisitionTimedOut, setAcquisitionTimedOut] = useState(false);
   const [fatalSessionError, setFatalSessionError] = useState<string | null>(null);
 
-  // P1: Refs to prevent delayed restart timers from firing after fatal teardown
-  const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // P1: SensorRestartCoordinator and fatal state refs to prevent invalid restarts
+  const restartCoordinatorRef = useRef<SensorRestartCoordinator | null>(null);
   const fatalSessionErrorRef = useRef<string | null>(null);
+
+  if (!restartCoordinatorRef.current) {
+    restartCoordinatorRef.current = new SensorRestartCoordinator({
+      stop: () => stop(),
+      start: () => start(),
+      getFatalError: () => fatalSessionErrorRef.current,
+      delayMs: 400,
+    });
+  }
 
   // Synchronize fatalSessionError ref and abort any pending restart timers immediately
   useEffect(() => {
     fatalSessionErrorRef.current = fatalSessionError;
-    if (fatalSessionError && restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
+    if (fatalSessionError) {
+      restartCoordinatorRef.current?.cancelPendingRestart();
     }
   }, [fatalSessionError]);
 
   // Clean up restart timer on unmount
   useEffect(() => {
     return () => {
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
+      restartCoordinatorRef.current?.cancelPendingRestart();
     };
   }, []);
 
@@ -106,10 +112,7 @@ export default function App() {
         const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
         setFatalSessionError(fatalMsg);
         fatalSessionErrorRef.current = fatalMsg;
-        if (restartTimerRef.current) {
-          clearTimeout(restartTimerRef.current);
-          restartTimerRef.current = null;
-        }
+        restartCoordinatorRef.current?.cancelPendingRestart();
       }
     });
 
@@ -190,10 +193,7 @@ export default function App() {
       return false;
     }
 
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
+    restartCoordinatorRef.current?.cancelPendingRestart();
 
     setError('');
     setMetric(null);
@@ -213,10 +213,7 @@ export default function App() {
         const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
         setFatalSessionError(fatalMsg);
         fatalSessionErrorRef.current = fatalMsg;
-        if (restartTimerRef.current) {
-          clearTimeout(restartTimerRef.current);
-          restartTimerRef.current = null;
-        }
+        restartCoordinatorRef.current?.cancelPendingRestart();
       }
       return false;
     }
@@ -233,10 +230,7 @@ export default function App() {
         const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
         setFatalSessionError(fatalMsg);
         fatalSessionErrorRef.current = fatalMsg;
-        if (restartTimerRef.current) {
-          clearTimeout(restartTimerRef.current);
-          restartTimerRef.current = null;
-        }
+        restartCoordinatorRef.current?.cancelPendingRestart();
       }
       return false;
     } finally {
@@ -249,27 +243,7 @@ export default function App() {
   }
 
   async function restartMeasurement() {
-    if (fatalSessionError || fatalSessionErrorRef.current) {
-      return;
-    }
-
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
-
-    // P1: Only proceed to schedule restart if the backend confirms successful stopping
-    const stoppedSuccessfully = await stop();
-    if (!stoppedSuccessfully || fatalSessionErrorRef.current) {
-      return;
-    }
-
-    restartTimerRef.current = setTimeout(() => {
-      restartTimerRef.current = null;
-      if (!fatalSessionErrorRef.current) {
-        start();
-      }
-    }, 400);
+    return restartCoordinatorRef.current?.restart();
   }
 
   const waveform = metric?.chestTrace ?? metric?.abdomenTrace ?? 0;

@@ -2,7 +2,7 @@
 
 Windows x64-first Electron + React + TypeScript proof of concept for integrating Presage SmartSpectra non-contact physiological sensing.
 
-> **Status:** Technical proof of concept with automated Windows CI validation (typecheck, 24 unit tests, NSIS installer build) and preliminary Windows x64 local testing with an integrated webcam. Hardware verification across arbitrary external cameras and clean machine setups is ongoing.
+> **Status:** Technical proof of concept with automated Windows CI validation (typecheck, 34 unit and renderer regression tests, NSIS installer build) and preliminary Windows x64 local testing with an integrated webcam. Hardware verification across arbitrary external cameras and clean machine setups is ongoing.
 
 ## Scope of this proof of concept
 
@@ -77,6 +77,18 @@ For local development and internal judge evaluations:
 For production distribution:
 - **Never embed an unrestricted developer key in the installer binary.**
 - Production releases should authenticate users via an application backend proxy or an ephemeral short-lived session token issued through Presage's approved partner provisioning flow.
+
+## Physical Hardware Acceptance Test Protocol (Windows 10/11)
+
+To independently validate BreatheSync outside mocked developer test harnesses, complete the following physical camera test matrix:
+
+1. **Integrated Webcam Baseline**: Start a measurement session with the built-in webcam. Verify initial calibration, confidence meter settling (`Confidence >= 45%`), and stable real-time respiratory waveform output.
+2. **Repeated Start/Stop Stress Cycle**: Execute `Start Measurement` → `Stop & Release Camera` at least 10 consecutive times to prove DirectShow / MediaFoundation filter graph handles release cleanly without driver deadlocks or memory leaks.
+3. **Mid-Session Hardware Disconnection**: Unplug an active USB webcam while measurement is running. Verify that the UI displays the hardware error notice and transitions to a safe idle/degraded state rather than crashing.
+4. **Hot-Plug Reconnection & Recovery**: Plug the webcam back in, click `Refresh camera list`, and start a new measurement to confirm hardware re-enumeration.
+5. **Multi-Camera Switching**: On a system with multiple video input devices, switch between cameras and verify the SDK binds to the chosen device ID without cross-device handle collision.
+6. **Active Session Process Termination**: Close the application window while a measurement session is running. Verify that the `before-quit` handler intercepts exit, awaits `stopAsync()` and `destroy()`, and leaves no dangling background processes or camera locks.
+7. **Clean-Machine Installer Execution**: Run `release/BreatheSync Setup 0.1.0.exe` on a clean Windows 10/11 machine without Node.js or developer tooling installed, confirming self-contained runtime execution.
 
 ## Verification Checklist
 

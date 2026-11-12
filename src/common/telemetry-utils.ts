@@ -523,4 +523,72 @@ export class SessionLifecycleCoordinator {
   }
 }
 
+export interface SensorRestartCoordinatorOptions {
+  stop: () => Promise<boolean>;
+  start: () => Promise<boolean>;
+  getFatalError: () => string | null | boolean;
+  delayMs?: number;
+  setTimeoutFn?: (cb: () => void, ms: number) => any;
+  clearTimeoutFn?: (id: any) => void;
+}
+
+/**
+ * Coordinates renderer sensor restart requests.
+ * Ensures restart is only scheduled after confirmed successful stop, prevents restart
+ * when a fatal teardown state is present, and provides cancellation of pending restart timers.
+ */
+export class SensorRestartCoordinator {
+  private timer: any = null;
+  private readonly stopFn: () => Promise<boolean>;
+  private readonly startFn: () => Promise<boolean>;
+  private readonly getFatalError: () => string | null | boolean;
+  private readonly delayMs: number;
+  private readonly setTimeoutFn: (cb: () => void, ms: number) => any;
+  private readonly clearTimeoutFn: (id: any) => void;
+
+  constructor(options: SensorRestartCoordinatorOptions) {
+    this.stopFn = options.stop;
+    this.startFn = options.start;
+    this.getFatalError = options.getFatalError;
+    this.delayMs = options.delayMs ?? 400;
+    this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
+    this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
+  }
+
+  cancelPendingRestart(): void {
+    if (this.timer != null) {
+      this.clearTimeoutFn(this.timer);
+      this.timer = null;
+    }
+  }
+
+  isRestartPending(): boolean {
+    return this.timer != null;
+  }
+
+  async restart(): Promise<boolean> {
+    if (this.getFatalError()) {
+      this.cancelPendingRestart();
+      return false;
+    }
+
+    this.cancelPendingRestart();
+
+    const stoppedSuccessfully = await this.stopFn();
+    if (!stoppedSuccessfully || this.getFatalError()) {
+      return false;
+    }
+
+    this.timer = this.setTimeoutFn(() => {
+      this.timer = null;
+      if (!this.getFatalError()) {
+        this.startFn();
+      }
+    }, this.delayMs);
+
+    return true;
+  }
+}
+
+
 
