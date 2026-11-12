@@ -260,6 +260,26 @@ export interface ManagedSdkInstance {
   destroy: () => Promise<void> | void;
 }
 
+export interface SessionLifecycleOptions {
+  teardownTimeoutMs?: number;
+}
+
+export function withTimeout<T>(promise: Promise<T> | void, timeoutMs: number, label: string): Promise<T | void> {
+  if (!promise || typeof (promise as any).then !== 'function') {
+    return Promise.resolve(promise);
+  }
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([
+    (promise as Promise<T>).finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    timeoutPromise,
+  ]);
+}
+
 /**
  * P0 Lifecycle Coordinator: Decouples startup and cleanup promises to eliminate
  * circular waits, handles concurrent stop/shutdown during startup, and ensures
@@ -275,6 +295,11 @@ export class SessionLifecycleCoordinator {
   private isShutdownCompleteState: boolean = false;
   private teardownFailed: boolean = false;
   private teardownError: Error | null = null;
+  private teardownTimeoutMs: number;
+
+  constructor(options?: SessionLifecycleOptions) {
+    this.teardownTimeoutMs = options?.teardownTimeoutMs ?? 5000;
+  }
 
   getState(): SessionState {
     return this.sessionState;
@@ -332,7 +357,7 @@ export class SessionLifecycleCoordinator {
       if (current) {
         if (typeof current.stopAsync === 'function') {
           try {
-            await current.stopAsync();
+            await withTimeout(Promise.resolve(current.stopAsync()), this.teardownTimeoutMs, 'SDK stopAsync');
           } catch (e) {
             stopErr = e;
             console.warn('SDK stop warning:', e);
@@ -340,7 +365,7 @@ export class SessionLifecycleCoordinator {
         }
         if (typeof current.destroy === 'function') {
           try {
-            await current.destroy();
+            await withTimeout(Promise.resolve(current.destroy()), this.teardownTimeoutMs, 'SDK destroy');
           } catch (e) {
             destroyErr = e;
             console.warn('SDK destroy warning:', e);
@@ -429,7 +454,7 @@ export class SessionLifecycleCoordinator {
               let destroyErr: unknown = null;
               if (typeof failedInstance.stopAsync === 'function') {
                 try {
-                  await failedInstance.stopAsync();
+                  await withTimeout(Promise.resolve(failedInstance.stopAsync()), this.teardownTimeoutMs, 'SDK stopAsync');
                 } catch (e) {
                   stopErr = e;
                   console.warn('SDK stop error on startup failure:', e);
@@ -437,7 +462,7 @@ export class SessionLifecycleCoordinator {
               }
               if (typeof failedInstance.destroy === 'function') {
                 try {
-                  await failedInstance.destroy();
+                  await withTimeout(Promise.resolve(failedInstance.destroy()), this.teardownTimeoutMs, 'SDK destroy');
                 } catch (e) {
                   destroyErr = e;
                   console.warn('SDK destroy error on startup failure:', e);

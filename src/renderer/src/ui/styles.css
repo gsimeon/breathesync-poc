@@ -128,6 +128,12 @@ body {
   color: #92400E;
 }
 
+.status-pill.stopping {
+  border-color: #FED7AA;
+  background: #FFF7ED;
+  color: #C2410C;
+}
+
 .pill-dot {
   width: 8px;
   height: 8px;
@@ -144,6 +150,12 @@ body {
 .status-pill.stale .pill-dot {
   background: #F59E0B;
   box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+
+.status-pill.stopping .pill-dot {
+  background: #EA580C;
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.25);
+  animation: pulse-dot 1s infinite;
 }
 
 .live-dot.stale {
@@ -804,9 +816,30 @@ select:focus {
   transition: all 0.18s ease;
 }
 
-.stop-btn:hover {
+.stop-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(239, 68, 68, 0.45);
+}
+
+.stop-btn:disabled,
+.stop-btn.stopping {
+  opacity: 0.75;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+  pointer-events: none;
+}
+
+.btn-content-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+  display: inline-block;
 }
 
 .status-badge-inline {

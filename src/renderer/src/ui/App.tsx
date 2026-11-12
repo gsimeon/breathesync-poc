@@ -35,6 +35,7 @@ export default function App() {
   const [cameraId, setCameraId] = useState('');
   const [consent, setConsent] = useState(false);
   const [running, setRunning] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [metric, setMetric] = useState<Metric | null>(null);
   const [status, setStatus] = useState('System standing by');
   const [error, setError] = useState('');
@@ -94,6 +95,7 @@ export default function App() {
         setRunning(true);
         setStatus('Live Measuring (session active)');
       } else if (res?.isCleanupPending) {
+        setIsStopping(true);
         setStatus('Camera finalizing release; standing by...');
       } else if (res?.state === 'degraded' || !res?.wasLastTeardownSuccessful) {
         const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
@@ -216,7 +218,7 @@ export default function App() {
   }, [metric, running, isStale, acquisitionTimedOut]);
 
   async function start(): Promise<boolean> {
-    if (fatalSessionError || fatalSessionErrorRef.current) {
+    if (fatalSessionError || fatalSessionErrorRef.current || isStopping) {
       return false;
     }
 
@@ -253,6 +255,9 @@ export default function App() {
   }
 
   async function stop(): Promise<boolean> {
+    if (isStopping) return false;
+    setIsStopping(true);
+    setStatus('Stopping measurement and releasing camera...');
     try {
       await window.breatheSync.stop();
       return true;
@@ -267,6 +272,7 @@ export default function App() {
       }
       return false;
     } finally {
+      setIsStopping(false);
       setRunning(false);
       setMetric(null);
       setLastMetricTime(null);
@@ -305,9 +311,11 @@ export default function App() {
               <span>{formatTimer(sessionSeconds)}</span>
             </div>
           )}
-          <span className={`status-pill ${running ? (isStale || acquisitionTimedOut ? 'stale' : 'measuring') : 'idle'}`}>
+          <span className={`status-pill ${isStopping ? 'stopping' : running ? (isStale || acquisitionTimedOut ? 'stale' : 'measuring') : 'idle'}`}>
             <span className="pill-dot" />
-            {running
+            {isStopping
+              ? 'Releasing Hardware...'
+              : running
               ? (acquisitionTimedOut ? 'Acquisition Delay' : isStale ? 'Signal Paused' : 'Live Measuring')
               : 'Sensor Idle'}
           </span>
@@ -484,8 +492,8 @@ export default function App() {
         </div>
       </section>
 
-      {/* P1: Acquisition Timeout Recovery Banner (hidden and disabled when fatal teardown error occurs) */}
-      {acquisitionTimedOut && !fatalSessionError && (
+      {/* P1: Acquisition Timeout Recovery Banner (hidden and disabled when fatal teardown error occurs or when stopping) */}
+      {acquisitionTimedOut && !fatalSessionError && !isStopping && (
         <section className="acquisition-timeout-banner" role="alert">
           <AlertCircle size={20} className="timeout-icon" />
           <div className="timeout-content">
@@ -499,7 +507,7 @@ export default function App() {
             type="button"
             className="restart-btn"
             onClick={restartMeasurement}
-            disabled={Boolean(fatalSessionError)}
+            disabled={Boolean(fatalSessionError) || isStopping}
           >
             <RotateCcw size={14} />
             <span>Restart Sensor</span>
@@ -525,7 +533,7 @@ export default function App() {
                 id="camera"
                 value={cameraId}
                 onChange={(e) => setCameraId(e.target.value)}
-                disabled={running || Boolean(fatalSessionError)}
+                disabled={running || isStopping || Boolean(fatalSessionError)}
               >
                 {cameras.length === 0 && <option value="">No camera detected</option>}
                 {cameras.map((camera) => (
@@ -538,7 +546,7 @@ export default function App() {
                 type="button"
                 className="refresh-btn"
                 onClick={refreshCameras}
-                disabled={running || Boolean(fatalSessionError)}
+                disabled={running || isStopping || Boolean(fatalSessionError)}
                 title="Refresh camera list"
               >
                 <RefreshCw size={14} />
@@ -552,7 +560,7 @@ export default function App() {
                 type="checkbox"
                 checked={consent}
                 onChange={(e) => setConsent(e.target.checked)}
-                disabled={running || Boolean(fatalSessionError)}
+                disabled={running || isStopping || Boolean(fatalSessionError)}
               />
               <div className="consent-text">
                 <ShieldCheck size={16} className="consent-icon" />
@@ -571,13 +579,25 @@ export default function App() {
               type="button"
               className="start-btn"
               onClick={start}
-              disabled={!consent || !cameraId || Boolean(fatalSessionError)}
+              disabled={!consent || !cameraId || Boolean(fatalSessionError) || isStopping}
             >
               Start Real-Time Measurement
             </button>
           ) : (
-            <button type="button" className="stop-btn" onClick={stop}>
-              Stop & Release Camera
+            <button
+              type="button"
+              className={`stop-btn ${isStopping ? 'stopping' : ''}`}
+              onClick={stop}
+              disabled={isStopping}
+            >
+              {isStopping ? (
+                <span className="btn-content-loading">
+                  <RefreshCw size={14} className="spin-icon" />
+                  <span>Releasing Camera Hardware...</span>
+                </span>
+              ) : (
+                'Stop & Release Camera'
+              )}
             </button>
           )}
           <span className="status-badge-inline">{status}</span>

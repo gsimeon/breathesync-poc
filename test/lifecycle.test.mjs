@@ -662,3 +662,32 @@ test('hasBreathingRate validates finite positive rates and defensively rejects i
   assert.equal(hasBreathingRate(null), false);
   assert.equal(hasBreathingRate(undefined), false);
 });
+
+test('SessionLifecycleCoordinator: hanging stopAsync triggers teardown timeout and marks degraded', async () => {
+  const coordinator = new SessionLifecycleCoordinator({ teardownTimeoutMs: 50 });
+  const hangingPromise = new Promise(() => {}); // never resolves
+
+  const mockSdk = {
+    start: async () => {},
+    stopAsync: () => hangingPromise,
+    destroy: async () => {},
+  };
+
+  await coordinator.start(() => mockSdk);
+  assert.equal(coordinator.getState(), 'running');
+
+  await assert.rejects(
+    async () => {
+      await coordinator.stop();
+    },
+    (err) => {
+      return (
+        isTeardownError(err) &&
+        err.message.includes('SDK stopAsync timed out after 50ms')
+      );
+    }
+  );
+
+  assert.equal(coordinator.getState(), 'degraded');
+  assert.equal(coordinator.wasLastTeardownSuccessful(), false);
+});
