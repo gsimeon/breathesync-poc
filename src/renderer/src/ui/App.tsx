@@ -88,6 +88,20 @@ export default function App() {
   useEffect(() => {
     refreshCameras();
 
+    // Synchronize initial state with main process on mount / reload
+    window.breatheSync.getState?.().then((res: any) => {
+      if (res?.state === 'running') {
+        setRunning(true);
+        setStatus('Live Measuring (session active)');
+      } else if (res?.isCleanupPending) {
+        setStatus('Camera finalizing release; standing by...');
+      } else if (res?.state === 'degraded' || !res?.wasLastTeardownSuccessful) {
+        const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
+        setFatalSessionError(fatalMsg);
+        fatalSessionErrorRef.current = fatalMsg;
+      }
+    }).catch(() => {});
+
     const offMetrics = window.breatheSync.onMetrics((payload) => {
       const metricPayload = payload as Metric;
       setMetric(metricPayload);
@@ -122,6 +136,19 @@ export default function App() {
       offError();
     };
   }, []);
+
+  // Gracefully stop active session if window is reloaded or navigated
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (running) {
+        window.breatheSync.stop().catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [running]);
 
   // Measurement freshness heartbeat: flags as stale if no new sample arrives in 2.5s
   useEffect(() => {
@@ -207,14 +234,20 @@ export default function App() {
       return true;
     } catch (e: any) {
       const msg = e?.message || 'Unable to start measurement';
-      setError(msg);
       setRunning(false);
       if (isTeardownError(e)) {
         const fatalMsg = 'Camera release could not be confirmed. Close and restart BreatheSync.';
         setFatalSessionError(fatalMsg);
         fatalSessionErrorRef.current = fatalMsg;
         restartCoordinatorRef.current?.cancelPendingRestart();
+        return false;
       }
+      if (msg.includes('Previous session teardown in progress')) {
+        setError('Camera hardware is currently finalizing release from the previous session. Please wait a moment and click Start again.');
+        setStatus('Camera finalizing release; please wait...');
+        return false;
+      }
+      setError(msg);
       return false;
     }
   }

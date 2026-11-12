@@ -163,3 +163,4 @@ test('Renderer restart regression: fatal error arriving during the 400 ms delay 
   timers.triggerAll();
   assert.equal(startCount, 0, 'start() must never be invoked if fatal error arrived');
 });
+

@@ -125,6 +125,16 @@ ipcMain.handle('breathesync:cameras', async (event) => {
   }
 });
 
+ipcMain.handle('breathesync:state', async (event) => {
+  validateIpcSender(event);
+  return {
+    state: coordinator.getState(),
+    isCleanupPending: coordinator.isCleanupPending(),
+    wasLastTeardownSuccessful: coordinator.wasLastTeardownSuccessful(),
+    teardownError: coordinator.getTeardownError()?.message || null,
+  };
+});
+
 ipcMain.handle('breathesync:start', async (event, cameraId: string) => {
   validateIpcSender(event);
 
@@ -257,6 +267,18 @@ async function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     console.warn('Blocked external window creation attempt to:', url);
     return { action: 'deny' };
+  });
+
+  // P0 Reliability: Auto-stop active camera session if renderer window reloads or navigates
+  mainWindow.webContents.on('did-start-navigation', async (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame && coordinator.getState() !== 'idle' && coordinator.getState() !== 'degraded') {
+      try {
+        console.log('Renderer navigation/reload detected; releasing active camera session...');
+        await coordinator.stop();
+      } catch (err) {
+        console.warn('Auto-stopped session on renderer reload/navigation:', err);
+      }
+    }
   });
 
   mainWindow.webContents.on('did-finish-load', () => {

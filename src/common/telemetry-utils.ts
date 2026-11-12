@@ -304,6 +304,10 @@ export class SessionLifecycleCoordinator {
     return this.teardownError;
   }
 
+  isCleanupPending(): boolean {
+    return this.activeCleanupPromise !== null;
+  }
+
   async cleanup(): Promise<void> {
     if (this.activeCleanupPromise) {
       return this.activeCleanupPromise;

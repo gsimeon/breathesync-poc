@@ -10,6 +10,7 @@ function subscribe<T>(channel: string, listener: Listener<T>) {
 
 contextBridge.exposeInMainWorld('breatheSync', {
   getCameras: () => ipcRenderer.invoke('breathesync:cameras'),
+  getState: () => ipcRenderer.invoke('breathesync:state'),
   start: (cameraId: string) => ipcRenderer.invoke('breathesync:start', cameraId),
   stop: () => ipcRenderer.invoke('breathesync:stop'),
   onMetrics: (listener: Listener<unknown>) => subscribe('breathesync:metrics', listener),
