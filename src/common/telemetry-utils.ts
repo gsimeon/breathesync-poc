@@ -54,6 +54,13 @@ export const SIGNAL_FRESHNESS_TIMEOUT_MS = 2500;
 /** Timeout in milliseconds before flagging that initial acquisition took too long. */
 export const ACQUISITION_TIMEOUT_MS = 15000;
 
+/** Safety timeout in milliseconds for hardware teardown (stopAsync & destroy).
+ * DirectShow video filter release and C++ thread pool joins on physical Windows
+ * hardware take 4-8 seconds under normal driver conditions; 12000ms gives ample
+ * headroom while still safely guarding against deadlocks.
+ */
+export const DEFAULT_TEARDOWN_TIMEOUT_MS = 12000;
+
 /** Structured error code when hardware release / camera driver teardown fails or cannot be confirmed. */
 export const ERROR_CODE_TEARDOWN_FAILED = 'TEARDOWN_FAILED';
 
@@ -343,7 +350,7 @@ export class SessionLifecycleCoordinator {
   private stateListeners: Set<(payload: SessionLifecycleStatePayload) => void> = new Set();
 
   constructor(options?: SessionLifecycleOptions) {
-    this.teardownTimeoutMs = options?.teardownTimeoutMs ?? 5000;
+    this.teardownTimeoutMs = options?.teardownTimeoutMs ?? DEFAULT_TEARDOWN_TIMEOUT_MS;
   }
 
   onStateChange(listener: (payload: SessionLifecycleStatePayload) => void): () => void {

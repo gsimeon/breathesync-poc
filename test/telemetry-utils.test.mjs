@@ -4,6 +4,7 @@ import {
   STABILITY_CONFIDENCE_THRESHOLD,
   SIGNAL_FRESHNESS_TIMEOUT_MS,
   ACQUISITION_TIMEOUT_MS,
+  DEFAULT_TEARDOWN_TIMEOUT_MS,
   ERROR_CODE_TEARDOWN_FAILED,
   isTeardownError,
   isConfidenceStable,
@@ -199,6 +200,10 @@ test('transitionSessionState validates complete session state machine', () => {
 
 test('ACQUISITION_TIMEOUT_MS is configured to 15 seconds', () => {
   assert.equal(ACQUISITION_TIMEOUT_MS, 15000);
+});
+
+test('DEFAULT_TEARDOWN_TIMEOUT_MS is configured to 12 seconds for native hardware driver release', () => {
+  assert.equal(DEFAULT_TEARDOWN_TIMEOUT_MS, 12000);
 });
 
 test('trace-only events keep state as acquiring and do not produce a false rate', () => {
